@@ -1,0 +1,19 @@
+# Ignorar arquivos de sistema e cache
+__pycache__/
+*.pyc
+.DS_Store
+
+# Ignorar ambiente virtual
+.venv/
+.virtualenvs/
+Pipfile
+Pipfile.lock
+
+# Ignorar configurações do Streamlit (ONDE ESTÃO AS SENHAS)
+.streamlit/secrets.toml
+
+# Ignorar demos baixadas (são pesadas demais pro GitHub)
+*.dem
+
+# Ignorar arquivos temporários
+temp/
