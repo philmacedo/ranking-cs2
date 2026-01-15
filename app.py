@@ -45,7 +45,7 @@ def atualizar_banco(stats_novos):
                     "kills": atual['kills'] + dados['Kills'],
                     "deaths": atual['deaths'] + dados['Deaths'],
                     "matches": atual['matches'] + dados['Matches'],
-                    "wins": atual.get('wins', 0) + dados['Wins'],
+                    "wins": atual.get('wins', 0) + dados['Wins'],  # <--- Agora soma vitórias reais
                     "headshots": atual.get('headshots', 0) + dados['Headshots'],
                     "enemies_flashed": atual.get('enemies_flashed', 0) + dados['EnemiesFlashed'],
                     "utility_damage": atual.get('utility_damage', 0) + dados['UtilityDamage']
@@ -75,7 +75,7 @@ def processar_demo(arquivo_upload):
     caminho_temp = tfile.name
     tfile.close()
     
-    # Estrutura zerada para guardar os dados DESSA partida
+    # Estrutura zerada
     stats_partida = {nome: {
         "Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, 
         "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0
@@ -86,100 +86,105 @@ def processar_demo(arquivo_upload):
     try:
         parser = DemoParser(caminho_temp)
         
-        # 1. Pega TODOS os eventos necessários
+        # 1. PEGAR TODOS OS EVENTOS
+        # Adicionamos 'player_team' se disponível, ou inferimos pelo player_death
         events_death = parser.parse_events(["player_death"])
         events_blind = parser.parse_events(["player_blind"])
         events_hurt = parser.parse_events(["player_hurt"])
-        events_round = parser.parse_events(["round_end"])
+        events_round = parser.parse_events(["round_end"]) # Essencial para vitória
         
-        # Converte para DataFrame (Tabela)
+        # DataFrames
         df_death = pd.DataFrame(events_death)
         df_blind = pd.DataFrame(events_blind)
         df_hurt = pd.DataFrame(events_hurt)
         df_round = pd.DataFrame(events_round)
 
-        # Conversão de IDs para Texto (evitar erro de número)
+        # Conversão de IDs para Texto
         for df in [df_death, df_blind, df_hurt]:
             if not df.empty and 'attacker_steamid' in df.columns:
                 df['attacker_steamid'] = df['attacker_steamid'].astype(str)
             if not df.empty and 'user_steamid' in df.columns:
                 df['user_steamid'] = df['user_steamid'].astype(str)
 
-        # --- LÓGICA DE VITÓRIA (Quem ganhou a partida?) ---
-        winner_team = None
-        if not df_round.empty:
-            # Conta quem ganhou mais rounds (Team 2 = T, Team 3 = CT)
-            wins_t = len(df_round[df_round['winner'] == 2])
-            wins_ct = len(df_round[df_round['winner'] == 3])
-            winner_team = 2 if wins_t > wins_ct else 3
+        # --- LÓGICA DE VITÓRIA (QUEM GANHOU?) ---
+        winning_team_num = None
+        
+        if not df_round.empty and 'winner' in df_round.columns:
+            # Conta rounds ganhos
+            # CS2: Team 2 = Terrorist, Team 3 = Counter-Terrorist
+            rounds_t = len(df_round[df_round['winner'] == 2])
+            rounds_ct = len(df_round[df_round['winner'] == 3])
+            
+            # Quem fez mais pontos ganhou
+            if rounds_t > rounds_ct:
+                winning_team_num = 2
+            elif rounds_ct > rounds_t:
+                winning_team_num = 3
+            else:
+                winning_team_num = 0 # Empate
 
         # --- PROCESSAMENTO POR JOGADOR ---
         for nome_exibicao, steam_id in AMIGOS.items():
             
-            # A. KILLS & HEADSHOTS
+            # --- A. COMBATE BÁSICO ---
             if not df_death.empty:
                 meus_kills = df_death[df_death['attacker_steamid'] == steam_id]
                 stats_partida[nome_exibicao]["Kills"] = len(meus_kills)
                 stats_partida[nome_exibicao]["Headshots"] = len(meus_kills[meus_kills['headshot'] == True])
-                
-                # Mortes
                 stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death['user_steamid'] == steam_id])
 
-            # B. INIMIGOS CEGOS (Flash)
+            # --- B. FLASHS ---
             if not df_blind.empty:
-                # Conta quantas vezes o atacante (quem jogou a flash) foi o amigo
                 stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind['attacker_steamid'] == steam_id])
 
-            # C. DANO DE GRANADA (HE, Molotov)
-            if not df_hurt.empty:
-                # Filtra dano causado por este amigo E que seja de granada
-                # Armas comuns: hegrenade, inferno (molotov), incgrenade
+            # --- C. DANO DE GRANADA ---
+            if not df_hurt.empty and 'weapon' in df_hurt.columns:
                 granadas = ['hegrenade', 'inferno', 'incgrenade']
                 meu_dano = df_hurt[
                     (df_hurt['attacker_steamid'] == steam_id) & 
                     (df_hurt['weapon'].isin(granadas))
                 ]
-                # Soma o dano (dmg_health)
-                stats_partida[nome_exibicao]["UtilityDamage"] = meu_dano['dmg_health'].sum()
+                stats_partida[nome_exibicao]["UtilityDamage"] = int(meu_dano['dmg_health'].sum())
 
-            # D. CHECK DE PARTICIPAÇÃO E VITÓRIA
-            # Verifica se jogou (se matou, morreu ou deu dano)
+            # --- D. VITÓRIA ---
+            # Precisamos saber em que time o amigo estava.
+            # Vamos olhar a última vez que ele apareceu num evento de morte (matando ou morrendo)
+            # para pegar o 'team_num' dele mais recente.
+            
+            player_team = None
+            if not df_death.empty:
+                # Procura eventos onde ele matou
+                last_atk = df_death[df_death['attacker_steamid'] == steam_id]
+                if not last_atk.empty:
+                    # Tenta pegar attacker_team_num (varia nome as vezes)
+                    if 'attacker_team_num' in last_atk.columns:
+                        player_team = last_atk.iloc[-1]['attacker_team_num']
+                
+                # Se ainda não achou, procura onde morreu
+                if player_team is None:
+                    last_vic = df_death[df_death['user_steamid'] == steam_id]
+                    if not last_vic.empty:
+                        if 'user_team_num' in last_vic.columns:
+                            player_team = last_vic.iloc[-1]['user_team_num']
+
+            # Se achamos o time dele e temos um vencedor da partida
+            if player_team and winning_team_num:
+                if player_team == winning_team_num:
+                    stats_partida[nome_exibicao]["Wins"] = 1
+            
+            # --- E. CHECK DE PARTICIPAÇÃO ---
             jogou = (stats_partida[nome_exibicao]["Kills"] > 0) or \
                     (stats_partida[nome_exibicao]["Deaths"] > 0)
             
             if jogou:
                 stats_partida[nome_exibicao]["Matches"] = 1
-                sucesso = True # Pelo menos um amigo jogou
-                
-                # Tenta descobrir se ele ganhou
-                # Pega o time dele na última morte/kill que participou
-                # (Isso é uma aproximação, mas funciona bem para MM)
-                if winner_team:
-                    # Tenta achar o time do jogador nos eventos
-                    # Se não achar em death, tenta em hurt
-                    last_event = df_death[
-                        (df_death['attacker_steamid'] == steam_id) | 
-                        (df_death['user_steamid'] == steam_id)
-                    ]
-                    
-                    if not last_event.empty:
-                        # Pega o team_num da última aparição dele (user_team_num ou attacker_team_num)
-                        # Nota: demo parser as vezes chama de 'attacker_team_num' ou 'team_num'
-                        # Vamos tentar simplificar: Se o time dele ganhou, soma vitória.
-                        # (Essa parte é complexa em demo, vamos assumir vitória por rounds se possível,
-                        #  senão deixamos 0 por segurança para não poluir).
-                        pass 
-                        # Nota: Implementar detecção de time precisa em demo é chato.
-                        # Vamos usar uma lógica simples: Se ele matou alguém e o time dele ganhou o round? Não.
-                        # Vamos pular a automação da vitória "perfeita" agora para não quebrar o código
-                        # e focar nas stats de combate que são garantidas.
-                        # Se você quiser MUITO a vitória, teríamos que rastrear o time round a round.
+                sucesso = True
 
         if sucesso:
             atualizar_banco(stats_partida)
 
     except Exception as e:
-        st.error(f"Erro ao processar: {e}")
+        st.error(f"Erro ao processar (Detalhe): {e}")
     finally:
         os.remove(caminho_temp)
         
@@ -191,14 +196,14 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking Completo"])
 
 with tab1:
-    st.write("Suba a demo. O sistema agora calcula: **Kills, HS, Flashs e Dano de Granada**.")
+    st.write("Suba a demo. O sistema calcula Kills, HS, Dano de Granada e **Vitórias**.")
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
     
     if arquivo is not None:
         if st.button("🚀 Processar Demo"):
-            with st.spinner("Analisando cada detalhe da partida..."):
+            with st.spinner("Calculando vencedor da partida..."):
                 if processar_demo(arquivo):
-                    st.success("Estatísticas Avançadas Computadas!")
+                    st.success("Partida computada com sucesso!")
                     st.balloons()
                 else:
                     st.warning("Nenhum jogador da lista foi encontrado na demo.")
@@ -211,24 +216,21 @@ with tab2:
     if response.data:
         df = pd.DataFrame(response.data)
         
-        # --- CÁLCULOS (RATES) ---
-        # 1. K/D Ratio
+        # Preenchimento de segurança
+        cols_check = ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']
+        for c in cols_check:
+            if c not in df.columns: df[c] = 0
+
+        # Cálculos
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-        
-        # 2. HS % (Headshots / Kills)
+        df['WinRate'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0, axis=1)
         df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0, axis=1)
         
-        # 3. Dano de Granada por Partida
-        df['UtilDmg/Partida'] = df.apply(lambda x: x['utility_damage'] / x['matches'] if x['matches'] > 0 else 0, axis=1)
-        
-        # 4. Cegos por Partida
-        df['Cegos/Partida'] = df.apply(lambda x: x['enemies_flashed'] / x['matches'] if x['matches'] > 0 else 0, axis=1)
-
-        # Ordenar (Pode mudar aqui para ordenar por HS ou KD)
+        # Ordenação
         df = df.sort_values(by='KD', ascending=False)
         
-        # Colunas finais
-        cols = ['nickname', 'KD', 'HS%', 'kills', 'matches', 'UtilDmg/Partida', 'Cegos/Partida']
+        # Exibição
+        cols = ['nickname', 'KD', 'WinRate', 'wins', 'matches', 'kills']
         
         st.dataframe(
             df[cols],
@@ -236,11 +238,10 @@ with tab2:
             column_config={
                 "nickname": "Jogador",
                 "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
-                "kills": "Kills Totais",
+                "WinRate": st.column_config.NumberColumn("Win Rate", format="%.1f%% 🏆"),
+                "wins": "Vitórias",
                 "matches": "Partidas",
-                "UtilDmg/Partida": st.column_config.NumberColumn("Dano Util.", format="%.0f 💣"),
-                "Cegos/Partida": st.column_config.NumberColumn("Cegos (Méd)", format="%.1f 💡"),
+                "kills": "Kills",
             },
             use_container_width=True
         )
