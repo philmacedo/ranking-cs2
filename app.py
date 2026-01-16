@@ -13,7 +13,7 @@ st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 st.markdown("""
 <style>
     /* Fundo geral ajustado */
-    .stApp { background-color: #1E4554; }
+    .stApp { background-color: #0e1012; }
     
     /* Cartões do Pódio */
     .podium-card {
@@ -424,9 +424,10 @@ elif pagina == "🏆 Ranking Global":
                 <div style="font-size:40px;">🥈</div>
                 <div class="player-name">{p2['nickname']}</div>
                 <div class="rating-val">{p2['RatingFinal']:.2f}</div>
-                <div class="stat-row">Rating Ajustado</div>
-                <div style="color:#8b9bb4;">{int(p2['matches'])} partidas</div>
+                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
+                <div style="color:#68A3E5;">{int(p2['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
+
         with col2: # Ouro
             p1 = df_podium.iloc[0]
             st.markdown(f"""
@@ -435,8 +436,9 @@ elif pagina == "🏆 Ranking Global":
                 <div class="player-name" style="color:#FFD700;">{p1['nickname']}</div>
                 <div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['RatingFinal']:.2f}</div>
                 <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
-                <div style="color:#8b9bb4;">{int(p1['matches'])} partidas</div>
+                <div style="color:#68A3E5;">{int(p1['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
+
         with col3: # Bronze
             p3 = df_podium.iloc[2]
             st.markdown(f"""
@@ -444,8 +446,8 @@ elif pagina == "🏆 Ranking Global":
                 <div style="font-size:40px;">🥉</div>
                 <div class="player-name">{p3['nickname']}</div>
                 <div class="rating-val">{p3['RatingFinal']:.2f}</div>
-                <div class="stat-row">Rating Ajustado</div>
-                <div style="color:#8b9bb4;">{int(p3['matches'])} partidas</div>
+                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
+                <div style="color:#68A3E5;">{int(p3['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
     
     st.divider()
