@@ -2,146 +2,306 @@ import streamlit as st
 import pandas as pd
 import os
 import tempfile
+import hashlib
+from supabase import create_client, Client
 from demoparser2 import DemoParser
 
-st.set_page_config(page_title="CS2 Debugger", page_icon="🐞", layout="wide")
+# --- 1. CONFIGURAÇÃO ---
+st.set_page_config(page_title="CS2 Pro Ranking", page_icon="🎯", layout="wide")
 
-# --- LISTA DE AMIGOS (Copie sua lista aqui) ---
+try:
+    SUPABASE_URL = st.secrets["supabase"]["url"]
+    SUPABASE_KEY = st.secrets["supabase"]["key"]
+except FileNotFoundError:
+    st.error("❌ Erro: Secrets não encontrados.")
+    st.stop()
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- LISTA DE AMIGOS ---
 AMIGOS = {
     "Ph (Ph1L)": ["76561198301569089", "76561198051052379"],
     "Pablo (Cyrax)": ["76561198143002755", "76561198446160415"],
     "Bruno (Safadinha)": ["76561198187604726"],
     "Daniel (Ocharadas)": ["76561199062357951"],
+    "LEO (Trewan)": ["76561198160033077"],
+    "FERNANDO (Nandin)": ["76561198185508959"],
+    "DG (dgtremsz)": ["76561199402154960"],
+    "Arlon (M4CH)": ["76561197978110112"],
 }
 
+# --- 2. FUNÇÕES ---
+
 def normalizar_time(valor):
+    """2 = TR, 3 = CT"""
     try:
         s = str(valor).upper().strip().replace('.0', '')
-        if s in ['CT', '3']: return '3' # CT
-        if s in ['T', 'TERRORIST', '2']: return '2' # TR
-        return f"DESCONHECIDO ({s})"
-    except: return "ERRO"
+        if s in ['CT', '3']: return 3
+        if s in ['T', 'TERRORIST', '2']: return 2
+        return None
+    except: return None
 
-def extrair_dados(parser, evento):
+def calcular_hash(arquivo_bytes):
+    return hashlib.md5(arquivo_bytes).hexdigest()
+
+def demo_ja_processada(file_hash):
     try:
-        dados = parser.parse_events([evento])
-        if isinstance(dados, list) and len(dados) > 0: return pd.DataFrame(dados[0][1])
+        response = supabase.table('processed_matches').select('match_hash').eq('match_hash', file_hash).execute()
+        return len(response.data) > 0
+    except: return False
+
+def registrar_demo(file_hash):
+    try:
+        supabase.table('processed_matches').insert({'match_hash': file_hash}).execute()
+    except: pass
+
+def ler_evento(parser, nome_evento):
+    try:
+        # Tenta ler o evento
+        dados = parser.parse_events([nome_evento])
+        if isinstance(dados, list) and len(dados) > 0:
+            return pd.DataFrame(dados[0][1])
         return pd.DataFrame(dados)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
-st.title("🐞 Debugger de Vitória CS2")
-st.write("Vamos descobrir por que o sistema acha que você perdeu.")
+def encontrar_coluna(df, possiveis):
+    """Encontra a primeira coluna que bate com a lista de possíveis"""
+    if df.empty: return None
+    for p in possiveis:
+        if p in df.columns: return p
+        # Tenta parcial (ex: 'attacker' in 'attacker_steamid')
+        for c in df.columns:
+            if p == c: return c
+    return None
 
-arquivo = st.file_uploader("Suba a demo 'vitoriosa' que está dando erro", type=["dem"])
+def atualizar_banco(stats_novos):
+    progresso = st.progress(0)
+    total = len(stats_novos)
+    for i, (nick, dados) in enumerate(stats_novos.items()):
+        if dados['Matches'] > 0:
+            response = supabase.table('player_stats').select("*").eq('nickname', nick).execute()
+            
+            novos_dados = {
+                "kills": dados['Kills'], "deaths": dados['Deaths'], "matches": dados['Matches'],
+                "wins": dados['Wins'], "headshots": dados['Headshots'], 
+                "enemies_flashed": dados['EnemiesFlashed'], "utility_damage": dados['UtilityDamage']
+            }
+            try:
+                if response.data:
+                    atual = response.data[0]
+                    for k in novos_dados: novos_dados[k] += atual.get(k, 0)
+                    supabase.table('player_stats').update(novos_dados).eq('nickname', nick).execute()
+                else:
+                    novos_dados["nickname"] = nick
+                    supabase.table('player_stats').insert(novos_dados).execute()
+            except Exception as e:
+                st.error(f"Erro BD: {e}")
+        progresso.progress((i + 1) / total)
+    progresso.empty()
 
-if arquivo:
+def processar_demo(arquivo_upload):
+    arquivo_bytes = arquivo_upload.read()
+    file_hash = calcular_hash(arquivo_bytes)
+    
+    if demo_ja_processada(file_hash):
+        st.error("⛔ Demo Duplicada!")
+        return False
+
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".dem")
-    tfile.write(arquivo.read())
-    caminho = tfile.name
+    tfile.write(arquivo_bytes)
+    caminho_temp = tfile.name
     tfile.close()
-
-    parser = DemoParser(caminho)
-
-    # --- PASSO 1: QUEM GANHOU O JOGO? ---
-    st.header("1. Análise do Vencedor (Placar)")
-    df_round = extrair_dados(parser, "round_end")
     
-    winning_team = None
+    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
+    sucesso = False
     
-    if not df_round.empty and 'winner' in df_round.columns:
-        # Mostra os dados crus para vermos o formato
-        st.write("Dados crus dos últimos 5 rounds:")
-        st.dataframe(df_round[['tick', 'winner', 'reason']].tail(5))
+    try:
+        parser = DemoParser(caminho_temp)
         
-        df_round['time_normalizado'] = df_round['winner'].apply(normalizar_time)
-        rounds_tr = len(df_round[df_round['time_normalizado'] == '2'])
-        rounds_ct = len(df_round[df_round['time_normalizado'] == '3'])
-        
-        col1, col2 = st.columns(2)
-        col1.metric("Rounds Time 2 (TR)", rounds_tr)
-        col2.metric("Rounds Time 3 (CT)", rounds_ct)
-        
-        if rounds_tr > rounds_ct: winning_team = '2'
-        elif rounds_ct > rounds_tr: winning_team = '3'
-        
-        if winning_team:
-            st.success(f"🏆 O Código decidiu que o vencedor foi: **TIME {winning_team}**")
-        else:
-            st.error("❌ O Código achou que foi EMPATE ou não conseguiu ler.")
-    else:
-        st.error("Não encontrei eventos de 'round_end'!")
+        # 1. LEITURA DOS DADOS
+        df_round = ler_evento(parser, "round_end")
+        df_death = ler_evento(parser, "player_death")
+        df_blind = ler_evento(parser, "player_blind")
+        df_hurt = ler_evento(parser, "player_hurt")
+        # NOVO: Item Pickup para ajudar a descobrir times
+        df_item = ler_evento(parser, "item_pickup")
 
-    # --- PASSO 2: ONDE ESTAVAM SEUS AMIGOS? ---
-    st.header("2. Análise dos Jogadores (Linha do Tempo)")
-    
-    df_death = extrair_dados(parser, "player_death")
-    df_spawn = extrair_dados(parser, "player_spawn")
-    
-    # Detetive de colunas
-    col_atk = None
-    if not df_death.empty:
-        cols = df_death.columns.tolist()
-        col_atk = next((c for c in cols if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
+        # 2. IDENTIFICAÇÃO DE COLUNAS (Restaurada para funcionar Flash/Dano)
+        # IDs Gerais
+        possiveis_id = ['attacker_steamid', 'attacker_xuid', 'user_steamid', 'steamid', 'userid_steamid']
         
-    col_spawn_id = None
-    if not df_spawn.empty:
-        col_spawn_id = next((c for c in df_spawn.columns if c in ['user_steamid', 'steamid', 'user_xuid']), None)
+        col_death_atk = encontrar_coluna(df_death, ['attacker_steamid', 'attacker_xuid'])
+        col_death_vic = encontrar_coluna(df_death, ['user_steamid', 'user_xuid'])
+        
+        col_blind_atk = encontrar_coluna(df_blind, ['attacker_steamid', 'attacker_xuid'])
+        col_hurt_atk = encontrar_coluna(df_hurt, ['attacker_steamid', 'attacker_xuid'])
+        
+        col_item_user = encontrar_coluna(df_item, ['user_steamid', 'userid_steamid', 'steamid'])
 
-    if not col_atk:
-        st.error("Não consegui ler os IDs na demo.")
-    else:
-        # Processa cada amigo
-        for nome, lista_ids in AMIGOS.items():
-            st.subheader(f"👤 Investigando: {nome}")
+        if not col_death_atk:
+            st.error("Erro: Colunas de SteamID não encontradas.")
+            return False
+
+        # 3. LIMPEZA DE IDS
+        for df in [df_death, df_blind, df_hurt, df_item]:
+            for col in df.columns:
+                if 'steamid' in col or 'xuid' in col:
+                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+        # 4. MAPEAMENTO DE TIMES (A Mágica da Vitória)         # player_teams[steamid] = Lista de times [(tick, time)]
+        player_teams = {}
+        
+        # Função auxiliar para registrar time
+        def registrar_time(df, col_id, col_team):
+            if df.empty or not col_id or not col_team or col_team not in df.columns: return
+            temp_df = df[[col_id, col_team, 'tick']].dropna()
+            for _, row in temp_df.iterrows():
+                uid = row[col_id]
+                t = normalizar_time(row[col_team])
+                if uid and t:
+                    if uid not in player_teams: player_teams[uid] = []
+                    player_teams[uid].append({'tick': row['tick'], 'team': t})
+
+        # Fonte 1: Item Pickup (Acontece todo round)
+        registrar_time(df_item, col_item_user, 'team_num')
+        registrar_time(df_item, col_item_user, 'user_team_num')
+
+        # Fonte 2: Mortes
+        registrar_time(df_death, col_death_atk, 'attacker_team_num')
+        registrar_time(df_death, col_death_vic, 'user_team_num')
+
+        # 5. LISTA DE ROUNDS
+        rounds_info = []
+        if not df_round.empty and 'winner' in df_round.columns:
+            for _, row in df_round.iterrows():
+                w = normalizar_time(row['winner'])
+                if w: rounds_info.append({'tick': row['tick'], 'winner': w})
+
+        # --- PROCESSAMENTO POR JOGADOR ---
+        for nome_exibicao, lista_ids in AMIGOS.items():
             lista_ids = [str(uid).strip() for uid in lista_ids]
             
-            # Limpa dados da demo
-            if col_atk in df_death.columns:
-                df_death[col_atk] = df_death[col_atk].astype(str).str.replace('.0', '')
-            if col_spawn_id and col_spawn_id in df_spawn.columns:
-                df_spawn[col_spawn_id] = df_spawn[col_spawn_id].astype(str).str.replace('.0', '')
+            # COMBATE (Kills/Deaths)
+            if not df_death.empty and col_death_atk:
+                my_kills = df_death[df_death[col_death_atk].isin(lista_ids)]
+                stats_partida[nome_exibicao]["Kills"] = len(my_kills)
+                
+                if 'headshot' in my_kills.columns:
+                    stats_partida[nome_exibicao]["Headshots"] = len(my_kills[my_kills['headshot']==True])
+                
+                if col_death_vic:
+                    stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_death_vic].isin(lista_ids)])
 
-            # Constrói histórico
-            historico = []
+            # UTILITIES (Flash/Dano) - Consertado
+            if not df_blind.empty and col_blind_atk:
+                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_blind_atk].isin(lista_ids)])
             
-            # 1. Spawns
-            if not df_spawn.empty and col_spawn_id:
-                meus_spawns = df_spawn[df_spawn[col_spawn_id].isin(lista_ids)]
-                for _, row in meus_spawns.iterrows():
-                    t = "Desconhecido"
-                    if 'team_num' in row: t = normalizar_time(row['team_num'])
-                    elif 'user_team_num' in row: t = normalizar_time(row['user_team_num'])
-                    historico.append({'tick': row['tick'], 'evento': 'Spawn', 'time': t})
+            if not df_hurt.empty and col_hurt_atk and 'weapon' in df_hurt.columns:
+                dmg = df_hurt[
+                    (df_hurt[col_hurt_atk].isin(lista_ids)) & 
+                    (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))
+                ]
+                stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
+
+            # CÁLCULO DE VITÓRIA (Round a Round Robusto)
+            meus_pontos = 0
+            total_rounds_validos = 0
             
-            # 2. Mortes/Kills
-            if not df_death.empty:
-                meus_eventos = df_death[df_death[col_atk].isin(lista_ids)]
-                for _, row in meus_eventos.iterrows():
-                    t = "Desconhecido"
-                    if 'attacker_team_num' in row: t = normalizar_time(row['attacker_team_num'])
-                    historico.append({'tick': row['tick'], 'evento': 'Kill/Death', 'time': t})
+            # Pega histórico de times
+            meu_historico = []
+            for uid in lista_ids:
+                if uid in player_teams:
+                    meu_historico.extend(player_teams[uid])
+            
+            # Ordena histórico
+            meu_historico.sort(key=lambda x: x['tick'])
 
-            # Analisa o último momento
-            if historico:
-                df_hist = pd.DataFrame(historico).sort_values('tick')
-                ultimo_estado = df_hist.iloc[-1]
-                ultimo_time = ultimo_estado['time']
-                
-                st.write("**Últimos 3 eventos registrados:**")
-                st.dataframe(df_hist.tail(3))
-                
-                cor = "green" if ultimo_time == winning_team else "red"
-                resultado = "VITÓRIA" if ultimo_time == winning_team else "DERROTA"
-                
-                st.markdown(f"""
-                * Time Vencedor da Partida: **{winning_team}**
-                * Time Final do Jogador: **{ultimo_time}**
-                * Conclusão do Código: :{cor}[**{resultado}**]
-                """)
-                
-                if ultimo_time != winning_team:
-                    st.warning(f"⚠️ PROBLEMA: O jogador terminou no time {ultimo_time}, mas quem ganhou foi o {winning_team}.")
-            else:
-                st.warning("⚠️ Jogador não encontrado nesta demo (nenhum evento de spawn ou kill).")
+            if rounds_info and meu_historico:
+                for r in rounds_info:
+                    r_tick = r['tick']
+                    r_winner = r['winner']
+                    
+                    # Qual era meu time ANTES desse round acabar?
+                    meu_time_no_round = None
+                    passado = [h for h in meu_historico if h['tick'] < r_tick]
+                    
+                    if passado:
+                        meu_time_no_round = passado[-1]['team'] 
+                    
+                    if meu_time_no_round == r_winner:
+                        meus_pontos += 1
+                    
+                    total_rounds_validos += 1
+            
+            # Regra: Ganhou mais da metade dos rounds?
+            if total_rounds_validos > 0 and meus_pontos > (total_rounds_validos / 2):
+                stats_partida[nome_exibicao]["Wins"] = 1
 
-    os.remove(caminho)
+            # Participação
+            if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
+                stats_partida[nome_exibicao]["Matches"] = 1
+                sucesso = True
+
+        if sucesso:
+            atualizar_banco(stats_partida)
+            registrar_demo(file_hash)
+            return True
+        else:
+            st.warning("Nenhum jogador da lista foi encontrado com stats > 0.")
+            return False
+
+    except Exception as e:
+        st.error(f"Erro Fatal: {e}")
+        return False
+    finally:
+        if os.path.exists(caminho_temp):
+            os.remove(caminho_temp)
+
+# --- 3. INTERFACE ---
+st.title("🔥 CS2 Pro Ranking")
+
+tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
+
+with tab1:
+    arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
+    if arquivo and st.button("🚀 Processar Demo"):
+        with st.spinner("Processando..."):
+            if processar_demo(arquivo):
+                st.success("Dados salvos!")
+                st.balloons()
+
+with tab2:
+    if st.button("🔄 Atualizar"): st.rerun()
+    
+    response = supabase.table('player_stats').select("*").execute()
+    if response.data:
+        df = pd.DataFrame(response.data)
+        
+        cols_check = ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']
+        for c in cols_check:
+            if c not in df.columns: df[c] = 0
+            
+        df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
+        df['WinRate'] = df.apply(lambda x: (x['wins'] / x['matches']) if x['matches'] > 0 else 0.0, axis=1)
+        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0.0, axis=1)
+        
+        df = df.sort_values(by='KD', ascending=False)
+        
+        st.dataframe(
+            df[['nickname', 'KD', 'WinRate', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
+            hide_index=True,
+            column_config={
+                "nickname": "Jogador",
+                "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
+                "WinRate": st.column_config.ProgressColumn("Win Rate", format="%.0f%%", min_value=0, max_value=1),
+                "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
+                "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
+                "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
+                "kills": "Kills",
+                "deaths": "Mortes"
+            },
+            use_container_width=True
+        )
+    else:
+        st.info("Ranking vazio.")
