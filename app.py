@@ -4,6 +4,7 @@ import os
 import tempfile
 import hashlib
 import altair as alt
+import plotly.graph_objects as go
 from supabase import create_client, Client
 from demoparser2 import DemoParser
 
@@ -12,10 +13,7 @@ st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 
 st.markdown("""
 <style>
-    /* Fundo geral ajustado */
     .stApp { background-color: #0e1012; }
-    
-    /* Cartões do Pódio */
     .podium-card {
         background-color: #1c222b;
         border-radius: 8px;
@@ -23,45 +21,17 @@ st.markdown("""
         text-align: center;
         border: 1px solid #2d3542;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-        transition: transform 0.2s, box-shadow 0.2s;
+        transition: transform 0.2s;
     }
-    .podium-card:hover { 
-        transform: translateY(-5px); 
-        box-shadow: 0 8px 15px rgba(233, 163, 56, 0.15);
-        border-color: #e9a338;
-    }
-    
-    /* Medalhas */
+    .podium-card:hover { transform: translateY(-5px); border-color: #e9a338; }
     .gold { border-top: 4px solid #FFD700; }
     .silver { border-top: 4px solid #C0C0C0; }
     .bronze { border-top: 4px solid #CD7F32; }
-    
-    /* Tipografia */
-    .rating-val { 
-        font-family: 'Inter', sans-serif;
-        font-size: 42px; 
-        font-weight: 800; 
-        margin: 10px 0; 
-        color: #e9a338;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-    }
-    .player-name { 
-        font-size: 22px; 
-        font-weight: 600;
-        color: #f1f1f1; 
-        margin-bottom: 5px; 
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .stat-row { 
-        font-size: 14px; 
-        color: #8b9bb4;
-        font-weight: 500;
-    }
-    
-    /* Ajustes globais */
+    .rating-val { font-family: 'Inter', sans-serif; font-size: 42px; font-weight: 800; margin: 10px 0; color: #e9a338; }
+    .player-name { font-size: 22px; font-weight: 600; color: #f1f1f1; margin-bottom: 5px; text-transform: uppercase; }
+    .stat-row { font-size: 14px; color: #8b9bb4; font-weight: 500; }
     h1, h2, h3 { color: #f1f1f1 !important; }
-    p, span { color: #cfdae6; }
+    p, span, li { color: #cfdae6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -119,22 +89,22 @@ def ler_evento(parser, nome_evento):
     except: return pd.DataFrame()
 
 def resetar_temporada():
-    """Apaga todos os dados do banco para iniciar nova season"""
     try:
-        # Apaga stats dos jogadores (filtra onde matches >= 0 para pegar tudo)
         supabase.table('player_stats').delete().gte('matches', 0).execute()
-        # Apaga histórico de demos processadas
+        # Tenta apagar mapa se a tabela existir, senão ignora
+        try: supabase.table('player_map_stats').delete().gte('matches', 0).execute() 
+        except: pass
         supabase.table('processed_matches').delete().neq('match_hash', '0').execute()
         return True
     except Exception as e:
         st.error(f"Erro ao resetar: {e}")
         return False
 
-def atualizar_banco(stats_novos):
+def atualizar_banco(stats_novos, mapa_atual):
     for i, (nick, dados) in enumerate(stats_novos.items()):
         if dados['Matches'] > 0:
+            # 1. Atualiza Stats Gerais
             response = supabase.table('player_stats').select("*").eq('nickname', nick).execute()
-            
             novos_dados = {
                 "kills": dados['Kills'], "deaths": dados['Deaths'], "assists": dados['Assists'],
                 "matches": dados['Matches'], "wins": dados['Wins'], 
@@ -150,15 +120,36 @@ def atualizar_banco(stats_novos):
                 else:
                     novos_dados["nickname"] = nick
                     supabase.table('player_stats').insert(novos_dados).execute()
-            except Exception as e:
-                st.error(f"Erro BD: {e}")
+            except Exception as e: st.error(f"Erro BD (Geral): {e}")
+
+            # 2. Atualiza Stats de MAPA
+            if mapa_atual:
+                try:
+                    resp_map = supabase.table('player_map_stats').select("*").eq('nickname', nick).eq('map_name', mapa_atual).execute()
+                    if resp_map.data:
+                        atual_map = resp_map.data[0]
+                        supabase.table('player_map_stats').update({
+                            "matches": atual_map['matches'] + 1,
+                            "wins": atual_map['wins'] + (1 if dados['Wins'] > 0 else 0)
+                        }).eq('id', atual_map['id']).execute()
+                    else:
+                        supabase.table('player_map_stats').insert({
+                            "nickname": nick, 
+                            "map_name": mapa_atual,
+                            "matches": 1, 
+                            "wins": 1 if dados['Wins'] > 0 else 0
+                        }).execute()
+                except Exception as e: 
+                    # Se der erro aqui, é provável que a tabela player_map_stats não exista ainda.
+                    # O usuário precisa criar no Supabase se quiser essa feature.
+                    st.warning(f"Aviso: Não foi possível salvar stats do mapa. Verifique se a tabela 'player_map_stats' existe. ({e})")
 
 def processar_demo(arquivo_upload):
     arquivo_bytes = arquivo_upload.read()
     file_hash = calcular_hash(arquivo_bytes)
     
     if demo_ja_processada(file_hash):
-        st.error("⛔ Demo Duplicada! Esta partida já consta no Ranking Global.")
+        st.error("⛔ Demo Duplicada!")
         return False, None
 
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".dem")
@@ -170,11 +161,19 @@ def processar_demo(arquivo_upload):
                             "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0, 
                             "TotalDamage": 0, "RoundsPlayed": 0} for nome in AMIGOS.keys()}
     sucesso = False
-    
+    mapa_nome = "Desconhecido"
+
     try:
         parser = DemoParser(caminho_temp)
         
-        # Leitura
+        # Mapa
+        try:
+            header = parser.parse_header()
+            if "map_name" in header:
+                mapa_nome = header["map_name"].replace("de_", "").capitalize()
+        except: pass
+
+        # Eventos
         df_round = ler_evento(parser, "round_end")
         df_death = ler_evento(parser, "player_death")
         df_blind = ler_evento(parser, "player_blind")
@@ -183,15 +182,14 @@ def processar_demo(arquivo_upload):
         df_item = ler_evento(parser, "item_pickup")
 
         # IDs
-        col_atk_id = next((c for c in df_death.columns if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
-        col_vic_id = next((c for c in df_death.columns if c in ['user_steamid', 'user_xuid', 'user_steamid64']), None)
+        col_atk_id = next((c for c in df_death.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
+        col_vic_id = next((c for c in df_death.columns if c in ['user_steamid', 'user_xuid']), None)
         col_ass_id = next((c for c in df_death.columns if c in ['assister_steamid', 'assister_xuid']), None)
-        col_team_id = next((c for c in df_team.columns if c in ['user_steamid', 'steamid', 'userid_steamid']), None)
+        col_team_id = next((c for c in df_team.columns if c in ['user_steamid', 'steamid']), None)
         col_item_id = next((c for c in df_item.columns if c in ['user_steamid', 'steamid']), None)
 
         if not col_atk_id: return False, None
 
-        # Limpeza
         for df in [df_death, df_blind, df_hurt, df_team, df_item]:
             for col in df.columns:
                 if 'steamid' in col or 'xuid' in col:
@@ -224,7 +222,6 @@ def processar_demo(arquivo_upload):
             for _, row in df_round.iterrows():
                 w = normalizar_time(row['winner'])
                 if w: rounds_data.append({'tick': row['tick'], 'winner': w})
-        
         total_rounds_match = len(rounds_data)
 
         # Processamento
@@ -276,7 +273,6 @@ def processar_demo(arquivo_upload):
                     meu_time = None
                     passado = [h for h in minha_timeline if h['tick'] <= r_tick]
                     if passado: meu_time = passado[-1]['team']
-                    
                     if meu_time:
                         total_rounds_jogados += 1
                         if meu_time == r_winner: meus_pontos += 1
@@ -287,21 +283,19 @@ def processar_demo(arquivo_upload):
             if total_rounds_jogados > 0 and meus_pontos > (total_rounds_jogados / 2):
                 stats_partida[nome_exibicao]["Wins"] = 1
 
-            if (stats_partida[nome_exibicao]["Kills"] > 0 or 
-                stats_partida[nome_exibicao]["Deaths"] > 0 or 
-                stats_partida[nome_exibicao]["UtilityDamage"] > 0):
+            if (stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0 or stats_partida[nome_exibicao]["UtilityDamage"] > 0):
                 stats_partida[nome_exibicao]["Matches"] = 1
                 sucesso = True
 
         if sucesso:
-            atualizar_banco(stats_partida)
+            atualizar_banco(stats_partida, mapa_nome)
             registrar_demo(file_hash)
             
             rows = []
             for k, v in stats_partida.items():
                 if v['Matches'] > 0:
                     rows.append({
-                        "nickname": k,
+                        "nickname": k, "mapa": mapa_nome,
                         "kills": v['Kills'], "deaths": v['Deaths'], "assists": v['Assists'],
                         "wins": v['Wins'], "headshots": v['Headshots'], 
                         "enemies_flashed": v['EnemiesFlashed'], "utility_damage": v['UtilityDamage'],
@@ -320,10 +314,9 @@ def processar_demo(arquivo_upload):
 
 # --- 4. INTERFACE ---
 st.sidebar.title("Navegação")
-pagina = st.sidebar.radio("Ir para:", ["📤 Upload & Partida Atual", "🏆 Ranking Global"], label_visibility="collapsed")
+pagina = st.sidebar.radio("Ir para:", ["📤 Upload & Partida", "🏆 Ranking Global", "🗺️ Estatísticas de Mapas"], label_visibility="collapsed")
 
-# === PÁGINA 1: UPLOAD ===
-if pagina == "📤 Upload & Partida Atual":
+if pagina == "📤 Upload & Partida":
     st.title("📤 Upload de Demo")
     st.markdown("Suba o arquivo `.dem` para analisar a partida e enviá-la ao Ranking.")
     
@@ -332,10 +325,10 @@ if pagina == "📤 Upload & Partida Atual":
 
     if arquivo:
         if st.button("🚀 Processar Partida"):
-            with st.spinner("Analisando cada tick da demo..."):
+            with st.spinner("Analisando demo e mapa..."):
                 sucesso, df_resultado = processar_demo(arquivo)
                 if sucesso:
-                    st.success("✅ Partida salva e processada!")
+                    st.success(f"✅ Partida no mapa **{df_resultado['mapa'].iloc[0]}** salva!")
                     st.session_state["df_partida_atual"] = df_resultado
                     st.balloons()
     
@@ -350,40 +343,29 @@ if pagina == "📤 Upload & Partida Atual":
         df['Resultado'] = df['wins'].apply(lambda x: "🏆 Vitória" if x == 1 else "💀 Derrota")
         
         df = df.sort_values(by='Rating', ascending=False)
-        
         st.dataframe(
-            df[['nickname', 'Resultado', 'Rating', 'KD', 'ADR', 'kills', 'assists', 'deaths', 'enemies_flashed', 'utility_damage']],
+            df[['nickname', 'Resultado', 'Rating', 'KD', 'ADR', 'kills', 'assists', 'deaths']],
             hide_index=True,
-            column_config={
-                "nickname": "Jogador", "Rating": st.column_config.NumberColumn("RATING", format="%.2f ⭐"),
-                "KD": st.column_config.NumberColumn("K/D", format="%.2f"), "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
-                "kills": "K", "deaths": "D", "assists": "A", "enemies_flashed": "Cegos", "utility_damage": "Util Dmg"
-            },
+            column_config={"nickname": "Jogador", "Rating": st.column_config.NumberColumn("RATING", format="%.2f ⭐")},
             use_container_width=True
         )
 
-# === PÁGINA 2: RANKING GLOBAL ===
 elif pagina == "🏆 Ranking Global":
     st.title("🏆 Ranking Global")
     
     col_top1, col_top2 = st.columns([3, 1])
-    with col_top1:
-        st.info("ℹ️ **Fator de Consistência:** Jogadores com menos de **50 partidas** sofrem penalidade no Rating.")
-    with col_top2:
+    with col_top1: st.info("ℹ️ **Fator de Consistência:** Jogadores com menos de **50 partidas** sofrem penalidade.")
+    with col_top2: 
         if st.button("🔄 Atualizar Dados"): st.rerun()
     
-    # Busca e Prepara Dados
     response = supabase.table('player_stats').select("*").execute()
     db_data = pd.DataFrame(response.data) if response.data else pd.DataFrame()
     
     all_friends = pd.DataFrame({"nickname": list(AMIGOS.keys())})
-    if not db_data.empty:
-        df = pd.merge(all_friends, db_data, on="nickname", how="left")
-    else:
-        df = all_friends
+    if not db_data.empty: df = pd.merge(all_friends, db_data, on="nickname", how="left")
+    else: df = all_friends
         
-    cols_stats = ['kills', 'deaths', 'assists', 'matches', 'wins', 'headshots', 
-                  'enemies_flashed', 'utility_damage', 'total_damage', 'rounds_played']
+    cols_stats = ['kills', 'deaths', 'assists', 'matches', 'wins', 'headshots', 'enemies_flashed', 'utility_damage', 'total_damage', 'rounds_played']
     for c in cols_stats:
         if c not in df.columns: df[c] = 0
     df[cols_stats] = df[cols_stats].fillna(0)
@@ -392,118 +374,103 @@ elif pagina == "🏆 Ranking Global":
     df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
     df['WinRatePct'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0.0, axis=1)
     df['ADR'] = df.apply(lambda x: x['total_damage'] / x['rounds_played'] if x['rounds_played'] > 0 else 0, axis=1)
+    df['RatingRaw'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
     df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
     
-    # Rating Raw
-    df['RatingRaw'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-    
-    # Rating Final (AQUI ESTÁ A MUDANÇA)
     META_PARTIDAS = 50 
     df['Consistency'] = df['matches'].apply(lambda x: x / META_PARTIDAS if x < META_PARTIDAS else 1.0)
     df['RatingFinal'] = df['RatingRaw'] * df['Consistency']
 
-    # Filtros
-    with st.expander("🔍 Filtros de Visualização", expanded=False):
+    with st.expander("🔍 Filtros", expanded=False):
         sel_players = st.multiselect("Filtrar Jogadores", options=df['nickname'].unique())
         min_matches = st.slider("Mínimo de Partidas", 0, 50, 0)
     
     df_display = df[df['matches'] >= min_matches].copy()
-    if sel_players:
-        df_display = df_display[df_display['nickname'].isin(sel_players)]
+    if sel_players: df_display = df_display[df_display['nickname'].isin(sel_players)]
 
-    # Ordenação e Pódio
     df_podium = df_display.sort_values(by='RatingFinal', ascending=False).reset_index(drop=True)
     
     if len(df_podium) >= 3 and df_podium.iloc[0]['RatingFinal'] > 0:
         col1, col2, col3 = st.columns([1, 1.2, 1])
-        
-        with col1: # Prata
+        with col1:
             p2 = df_podium.iloc[1]
-            st.markdown(f"""
-            <div class="podium-card silver">
-                <div style="font-size:40px;">🥈</div>
-                <div class="player-name">{p2['nickname']}</div>
-                <div class="rating-val">{p2['RatingFinal']:.2f}</div>
-                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
-                <div style="color:#68A3E5;">{int(p2['matches'])} partidas</div>
-            </div>""", unsafe_allow_html=True)
-
-        with col2: # Ouro
+            st.markdown(f"""<div class="podium-card silver"><div style="font-size:40px;">🥈</div><div class="player-name">{p2['nickname']}</div><div class="rating-val">{p2['RatingFinal']:.2f}</div><div class="stat-row">Rating Ajustado</div></div>""", unsafe_allow_html=True)
+        with col2:
             p1 = df_podium.iloc[0]
-            st.markdown(f"""
-            <div class="podium-card gold">
-                <div style="font-size:60px;">👑</div>
-                <div class="player-name" style="color:#FFD700;">{p1['nickname']}</div>
-                <div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['RatingFinal']:.2f}</div>
-                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
-                <div style="color:#68A3E5;">{int(p1['matches'])} partidas</div>
-            </div>""", unsafe_allow_html=True)
-
-        with col3: # Bronze
+            st.markdown(f"""<div class="podium-card gold"><div style="font-size:60px;">👑</div><div class="player-name" style="color:#FFD700;">{p1['nickname']}</div><div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['RatingFinal']:.2f}</div><div class="stat-row" style="color:#FFD700;">Rating Ajustado</div></div>""", unsafe_allow_html=True)
+        with col3:
             p3 = df_podium.iloc[2]
-            st.markdown(f"""
-            <div class="podium-card bronze">
-                <div style="font-size:40px;">🥉</div>
-                <div class="player-name">{p3['nickname']}</div>
-                <div class="rating-val">{p3['RatingFinal']:.2f}</div>
-                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
-                <div style="color:#68A3E5;">{int(p3['matches'])} partidas</div>
-            </div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="podium-card bronze"><div style="font-size:40px;">🥉</div><div class="player-name">{p3['nickname']}</div><div class="rating-val">{p3['RatingFinal']:.2f}</div><div class="stat-row">Rating Ajustado</div></div>""", unsafe_allow_html=True)
     
     st.divider()
-    
-    # Tabela
     st.subheader("📋 Classificação Oficial")
-    st.dataframe(
-        df_podium[['nickname', 'RatingFinal', 'RatingRaw', 'Retrospecto', 'KD', 'ADR', 'WinRatePct', 'kills', 'deaths', 'enemies_flashed', 'utility_damage']],
-        hide_index=True,
-        column_config={
-            "nickname": "Jogador",
-            "RatingFinal": st.column_config.NumberColumn("RATING OFICIAL", format="%.2f ⭐", help="Com penalidade de consistência"),
-            "RatingRaw": st.column_config.NumberColumn("Rating Real", format="%.2f", help="Performance pura"),
-            "Retrospecto": "Vit/Jogos",
-            "KD": st.column_config.NumberColumn("K/D", format="%.2f"),
-            "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
-            "WinRatePct": st.column_config.NumberColumn("Win%", format="%.0f%%"),
-            "kills": "K", "deaths": "D", "enemies_flashed": "Cegos", "utility_damage": "Util Dmg"
-        },
-        use_container_width=True
-    )
+    st.dataframe(df_podium[['nickname', 'RatingFinal', 'RatingRaw', 'Retrospecto', 'KD', 'ADR', 'WinRatePct', 'kills', 'deaths', 'enemies_flashed', 'utility_damage']], hide_index=True, column_config={"nickname": "Jogador", "RatingFinal": st.column_config.NumberColumn("RATING OFICIAL", format="%.2f ⭐"), "WinRatePct": st.column_config.NumberColumn("Win%", format="%.0f%%")}, use_container_width=True)
 
     st.divider()
-    with st.expander("ℹ️ Entenda a Matemática do Ranking (Como funciona?)"):
-        st.markdown(r"""
-        ### 1. 🧠 O "Rating Performance" (Sua Nota de Habilidade)
-        
-        $$
-        \text{Rating} = \frac{\text{Kills} + (\text{Assists} \times 0.4) + (\text{Cegos} \times 0.2) + (\text{DanoUtil} \div 100)}{\text{Mortes}}
-        $$
-        
-        ---
-
-        ### 2. ⚖️ O Fator de Consistência (A Regra dos 50 Jogos)
-        $$
-        \text{Rating Oficial} = \text{Rating Base} \times \min\left(1, \frac{\text{Jogos}}{50}\right)
-        $$
-
-        **O que isso significa na prática?**
-        | Partidas Jogadas | Peso da Nota | Situação |
-        | :--- | :--- | :--- |
-        | 🐣 **10 Jogos** | 20% | Nota muito reduzida (Iniciante) |
-        | 🐥 **25 Jogos** | 50% | Nota parcial (Ganhando experiência) |
-        | 🦅 **50 Jogos** | **100%** | **Nota Real (Lenda do Ranking)** |
-        """)
-
-    # --- ÁREA ADMINISTRATIVA ---
-    st.divider()
-    with st.expander("⚠️ Área Administrativa (Reiniciar Temporada)"):
-        st.markdown("Use esta área apenas para **apagar todos os dados** e começar um novo campeonato.")
-        senha_admin = st.text_input("Senha de Administrador", type="password")
-        
-        if st.button("🗑️ DESTRUIR DADOS E REINICIAR TEMPORADA", type="primary"):
+    with st.expander("⚠️ Área Administrativa"):
+        senha_admin = st.text_input("Senha", type="password")
+        if st.button("🗑️ REINICIAR TEMPORADA", type="primary"):
             if senha_admin == "admin123":
                 if resetar_temporada():
-                    st.success("Temporada reiniciada com sucesso! Todos os dados foram apagados.")
+                    st.success("Temporada reiniciada!")
                     st.rerun()
-            else:
-                st.error("Senha incorreta.")
+            else: st.error("Senha incorreta.")
+
+elif pagina == "🗺️ Estatísticas de Mapas":
+    st.title("🗺️ Estatísticas de Mapas")
+    st.markdown("Veja o desempenho por mapa (Radar Chart).")
+    
+    if st.button("🔄 Carregar Mapas"): st.rerun()
+
+    # Busca dados
+    try:
+        resp_maps = supabase.table('player_map_stats').select("*").execute()
+    except:
+        st.warning("⚠️ Tabela de mapas não encontrada. Certifique-se de criar a tabela 'player_map_stats' no Supabase.")
+        resp_maps = None
+    
+    if resp_maps and resp_maps.data:
+        df_maps = pd.DataFrame(resp_maps.data)
+        
+        jogadores = sorted(df_maps['nickname'].unique())
+        jogador_selecionado = st.selectbox("Selecione o Jogador:", ["Todos (Média Geral)"] + jogadores)
+        
+        if jogador_selecionado != "Todos (Média Geral)":
+            df_filtered = df_maps[df_maps['nickname'] == jogador_selecionado].copy()
+            titulo = f"Win Rate de {jogador_selecionado}"
+        else:
+            df_filtered = df_maps.groupby('map_name').agg({'matches': 'sum', 'wins': 'sum'}).reset_index()
+            titulo = "Win Rate Geral do Grupo"
+
+        df_filtered['WinRate'] = (df_filtered['wins'] / df_filtered['matches']) * 100
+        
+        # Radar Chart
+        if not df_filtered.empty:
+            categories = df_filtered['map_name'].tolist()
+            values = df_filtered['WinRate'].tolist()
+            # Fecha o ciclo do radar
+            categories = categories + [categories[0]]
+            values = values + [values[0]]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatterpolar(
+                r=values, theta=categories, fill='toself', name='Win Rate %',
+                line=dict(color='#e9a338'), fillcolor='rgba(233, 163, 56, 0.2)'
+            ))
+            fig.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 100], color="#8b9bb4"), bgcolor="#1c222b"),
+                paper_bgcolor="#0e1012", font=dict(color="#f1f1f1"), title=dict(text=titulo),
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Explicação do Gráfico
+            with st.expander("ℹ️ Entenda o Gráfico de Radar"):
+                st.markdown("""
+                * **O que é:** Este gráfico mostra suas áreas de força (pontas para fora) e fraqueza (pontas para dentro).
+                * **Área Amarela:** Quanto maior a área colorida, maior é a sua taxa de vitória naquele mapa.
+                * **Centro:** Se a linha estiver perto do centro, significa que você perde muito nesse mapa (perto de 0%).
+                * **Borda:** Se a linha encostar na borda externa, você tem 100% de vitória.
+                """)
+    else:
+        st.info("Nenhuma estatística de mapa encontrada ainda. Suba partidas novas!")
