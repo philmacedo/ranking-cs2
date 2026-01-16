@@ -404,7 +404,7 @@ elif pagina == "🗺️ Mapas & Radar":
     
     if st.button("🔄 Carregar Mapas"): st.rerun()
 
-    # Busca dados da tabela nova
+    # Busca dados da tabela
     try:
         resp_maps = supabase.table('player_map_stats').select("*").execute()
     except:
@@ -414,8 +414,8 @@ elif pagina == "🗺️ Mapas & Radar":
     if resp_maps and resp_maps.data:
         df_maps = pd.DataFrame(resp_maps.data)
         
-        # Lista Oficial de Mapas do CS2 (Para garantir que o radar fique bonito)
-        MAPAS_OFICIAIS = ['Mirage', 'Inferno', 'Nuke', 'Overpass', 'Ancient', 'Anubis', 'Dust2']
+        # Lista Oficial de Mapas (Garante que todos apareçam)
+        MAPAS_OFICIAIS = ['Inferno','Overpass',  'Ancient', 'Nuke', 'Dust2','Anubis', 'Mirage']
         
         jogadores = sorted(df_maps['nickname'].unique())
         jogador_selecionado = st.selectbox("Selecione a Visão:", ["Todos (Média Geral)"] + jogadores)
@@ -428,7 +428,7 @@ elif pagina == "🗺️ Mapas & Radar":
             df_filtered = df_maps.groupby('map_name').agg({'matches': 'sum', 'wins': 'sum'}).reset_index()
             titulo_grafico = "Performance Geral do Grupo"
 
-        # Garante que todos os mapas existam no DataFrame, mesmo com 0 jogos
+        # Garante que todos os mapas existam no DataFrame (Cruzamento)
         df_completo = pd.DataFrame({'map_name': MAPAS_OFICIAIS})
         df_final = pd.merge(df_completo, df_filtered, on='map_name', how='left').fillna(0)
         
@@ -438,19 +438,17 @@ elif pagina == "🗺️ Mapas & Radar":
         # --- VISUALIZAÇÃO ---
         col_radar, col_barras = st.columns([1, 1])
 
-        # 1. GRÁFICO DE RADAR (SPIDER)
+        # 1. GRÁFICO DE RADAR (SPIDER) - Mantido
         with col_radar:
             categories = df_final['map_name'].tolist()
             values = df_final['WinRate'].tolist()
             matches = df_final['matches'].tolist()
             
-            # Fecha o ciclo do radar (repete o primeiro ponto no final)
+            # Fecha o ciclo
             categories_radar = categories + [categories[0]]
             values_radar = values + [values[0]]
             
             fig_radar = go.Figure()
-            
-            # Linha Principal (Dados)
             fig_radar.add_trace(go.Scatterpolar(
                 r=values_radar,
                 theta=categories_radar,
@@ -460,7 +458,6 @@ elif pagina == "🗺️ Mapas & Radar":
                 fillcolor='rgba(233, 163, 56, 0.3)',
                 hovertext=[f"Mapa: {c}<br>Jogos: {int(m)}<br>WinRate: {v:.1f}%" for c, m, v in zip(categories, matches, values)] + [""]
             ))
-
             fig_radar.update_layout(
                 polar=dict(
                     radialaxis=dict(visible=True, range=[0, 100], color="#8b9bb4", gridcolor="#2d3542", showticklabels=False),
@@ -473,50 +470,58 @@ elif pagina == "🗺️ Mapas & Radar":
                 showlegend=False,
                 height=400
             )
-            st.markdown(f"### 🕸️ Radar ({titulo_grafico})")
+            st.markdown(f"### 🕸️ Radar")
             st.plotly_chart(fig_radar, use_container_width=True)
 
-        # 2. GRÁFICO DE BARRAS (RANKING DOS MAPAS)
+        # 2. GRÁFICO DE BARRAS VERTICAIS (NOVO)
         with col_barras:
-            # Ordena pelos mapas mais jogados ou com maior winrate
-            df_barras = df_final[df_final['matches'] > 0].sort_values(by='WinRate', ascending=True)
+            # Ordena: Quem tem mais WinRate aparece primeiro
+            df_barras = df_final.sort_values(by=['WinRate', 'matches'], ascending=False)
             
-            if not df_barras.empty:
-                fig_bar = go.Figure()
-                fig_bar.add_trace(go.Bar(
-                    x=df_barras['WinRate'],
-                    y=df_barras['map_name'],
-                    orientation='h',
-                    marker=dict(
-                        color=df_barras['WinRate'],
-                        colorscale='RdYlGn', # Vermelho (Ruim) -> Verde (Bom)
-                        showscale=False
-                    ),
-                    text=[f"{v:.0f}%" for v in df_barras['WinRate']],
-                    textposition='auto',
-                    hovertext=[f"Jogos: {int(m)}" for m in df_barras['matches']]
-                ))
-                
-                fig_bar.update_layout(
-                    xaxis=dict(range=[0, 100], gridcolor="#2d3542", title="Taxa de Vitória (%)"),
-                    yaxis=dict(color="#f1f1f1"),
-                    paper_bgcolor="#0e1012",
-                    plot_bgcolor="#0e1012",
-                    font=dict(color="#f1f1f1"),
-                    margin=dict(l=10, r=10, t=20, b=20),
-                    height=400
-                )
-                st.markdown("### 📊 Ranking de Eficiência")
-                st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.info("Jogue mais mapas para gerar o ranking de barras!")
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(
+                x=df_barras['map_name'],  # Mapas no Eixo X (Embaixo)
+                y=df_barras['WinRate'],   # Altura é a Vitória
+                marker=dict(
+                    color=df_barras['WinRate'],
+                    colorscale='RdYlGn',  # Vermelho -> Verde
+                    cmin=0, cmax=100,
+                    showscale=False
+                ),
+                text=[f"{v:.0f}%" if m > 0 else "" for v, m in zip(df_barras['WinRate'], df_barras['matches'])],
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Win Rate: %{y:.1f}%<br>Partidas: %{customdata}<extra></extra>',
+                customdata=df_barras['matches'] # Passa o nº de partidas para o tooltip
+            ))
+            
+            fig_bar.update_layout(
+                xaxis=dict(
+                    title="Mapas Competitivos",
+                    color="#f1f1f1",
+                    gridcolor="#2d3542"
+                ),
+                yaxis=dict(
+                    title="Taxa de Vitória (%)",
+                    range=[0, 110], # Um pouco mais que 100 para caber o texto
+                    color="#f1f1f1",
+                    gridcolor="#2d3542"
+                ),
+                paper_bgcolor="#0e1012",
+                plot_bgcolor="#0e1012",
+                font=dict(color="#f1f1f1"),
+                margin=dict(l=10, r=10, t=20, b=20),
+                height=400,
+                bargap=0.4 # Espaçamento entre barras
+            )
+            st.markdown("### 📊 Ranking de Eficiência")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
         # 3. TABELA DETALHADA
         st.divider()
         st.subheader("📋 Detalhes por Mapa")
         
-        # Mostra apenas mapas que já foram jogados
-        df_show = df_final[df_final['matches'] > 0].sort_values('matches', ascending=False)
+        # Na tabela, mostra primeiro os que foram jogados
+        df_show = df_final.sort_values(by=['matches', 'WinRate'], ascending=False)
         
         st.dataframe(
             df_show[['map_name', 'matches', 'wins', 'WinRate']],
