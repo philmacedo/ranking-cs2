@@ -8,8 +8,8 @@ st.set_page_config(page_title="CS2 Raio-X", page_icon="🩻", layout="wide")
 
 # Lista simplificada para focar no erro
 AMIGOS_DEBUG = {
-    "Ph (Ph1L)": "76561198051052379",
-    "Pablo (Cyrax)": "76561198446160415",
+    "Ph (Ph1L)": "76561198301569089",
+    "Pablo (Cyrax)": "76561198143002755"
 }
 
 def ler_evento(parser, evento):
@@ -48,10 +48,10 @@ if arquivo:
         st.dataframe(df_team.head())
 
     # --- 2. RASTREAR O JOGADOR 'PH' ---
-    st.header("2. Rastreando o Ph (76561198051052379)")
+    st.header("2. Rastreando o Ph (76561198301569089)")
     
     # Filtra eventos só do Ph
-    id_alvo = "76561198051052379"
+    id_alvo = "76561198301569089"
     
     st.subheader("Eventos de Nascimento (Spawn)")
     if not df_spawn.empty:
