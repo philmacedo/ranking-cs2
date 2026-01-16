@@ -55,14 +55,16 @@ def registrar_demo(file_hash):
         supabase.table('processed_matches').insert({'match_hash': file_hash}).execute()
     except: pass
 
-def extrair_dados_seguro(parser, evento, colunas_extra=None):
+def ler_evento(parser, nome_evento):
+    """Lê um evento da demo de forma simples e direta"""
     try:
-        # Pede explicitamente as colunas que precisamos
-        dados = parser.parse_events([evento], other_props=colunas_extra)
+        dados = parser.parse_events([nome_evento])
         if isinstance(dados, list) and len(dados) > 0:
             return pd.DataFrame(dados[0][1])
         return pd.DataFrame(dados)
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.warning(f"Aviso: Não consegui ler o evento '{nome_evento}': {e}")
+        return pd.DataFrame()
 
 def atualizar_banco(stats_novos):
     progresso = st.progress(0)
@@ -102,113 +104,138 @@ def processar_demo(arquivo_upload):
     caminho_temp = tfile.name
     tfile.close()
     
-    # Inicializa stats
     stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
     sucesso = False
     
     try:
         parser = DemoParser(caminho_temp)
         
-        # 1. LEITURA REFORÇADA (Pede team_num explicitamente)
-        # Round End: Winner
-        df_round = extrair_dados_seguro(parser, "round_end", ["winner", "reason"])
-        
-        # Player Spawn: ESSENCIAL PARA SABER O TIME
-        df_spawn = extrair_dados_seguro(parser, "player_spawn", ["team_num", "user_steamid"])
-        
-        # Combate
-        df_death = extrair_dados_seguro(parser, "player_death", ["attacker_steamid", "user_steamid", "headshot", "attacker_team_num"])
-        df_blind = extrair_dados_seguro(parser, "player_blind", ["attacker_steamid"])
-        df_hurt = extrair_dados_seguro(parser, "player_hurt", ["attacker_steamid", "weapon", "dmg_health"])
+        # 1. LEITURA DOS DADOS (Sem pedir colunas extras para evitar erro)
+        df_round = ler_evento(parser, "round_end")
+        df_spawn = ler_evento(parser, "player_spawn") 
+        df_death = ler_evento(parser, "player_death")
+        df_blind = ler_evento(parser, "player_blind")
+        df_hurt = ler_evento(parser, "player_hurt")
 
-        # Identificação de IDs
-        col_spawn_id = 'user_steamid'
-        col_atk_id = 'attacker_steamid'
-        col_vic_id = 'user_steamid'
+        # Verifica se leu o básico
+        if df_death.empty:
+            st.error("Erro: Não encontrei dados de morte na demo.")
+            return False
 
-        # Limpeza de IDs (remove .0)
+        # 2. IDENTIFICAÇÃO DE COLUNAS (Auto-detect)
+        col_atk_id = next((c for c in df_death.columns if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
+        col_vic_id = next((c for c in df_death.columns if c in ['user_steamid', 'user_xuid', 'user_steamid64']), None)
+        
+        col_spawn_id = None
+        if not df_spawn.empty:
+            col_spawn_id = next((c for c in df_spawn.columns if c in ['user_steamid', 'steamid', 'userid_steamid']), None)
+
+        if not col_atk_id:
+            st.error("Erro: Colunas de SteamID não encontradas.")
+            return False
+
+        # 3. LIMPEZA DE IDS (Crucial)
         for df in [df_spawn, df_death, df_blind, df_hurt]:
             for col in df.columns:
-                if 'steamid' in col:
+                if 'steamid' in col or 'xuid' in col:
                     df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-        # --- MAPA DE ROUNDS ---
-        # Cria uma lista: Round 1 acabou no tick 1000, venceu TR (2)
+        # 4. MAPEAMENTO DE TIMES (Quem jogou onde?)
+        # player_teams[steamid] = Lista de times que ele jogou [(tick, time)]
+        player_teams = {}
+        
+        # Usa o SPAWN para saber o time (Mais confiável)
+        if not df_spawn.empty:
+            # Tenta achar a coluna de time
+            col_team = next((c for c in df_spawn.columns if c in ['team_num', 'user_team_num']), None)
+            
+            if col_team:
+                df_spawn = df_spawn.sort_values('tick')
+                for _, row in df_spawn.iterrows():
+                    uid = row.get(col_spawn_id)
+                    team = normalizar_time(row.get(col_team))
+                    if uid and team:
+                        if uid not in player_teams: player_teams[uid] = []
+                        player_teams[uid].append({'tick': row['tick'], 'team': team})
+        
+        # Fallback: Se o spawn falhou, tenta usar DEATH/KILL
+        if not player_teams and not df_death.empty:
+            st.warning("Aviso: Usando kills para detectar times (Spawn vazio ou sem time).")
+            col_team_atk = next((c for c in df_death.columns if c in ['attacker_team_num', 'team_num']), None)
+            if col_team_atk:
+                for _, row in df_death.iterrows():
+                    uid = row.get(col_atk_id)
+                    team = normalizar_time(row.get(col_team_atk))
+                    if uid and team:
+                        if uid not in player_teams: player_teams[uid] = []
+                        player_teams[uid].append({'tick': row['tick'], 'team': team})
+
+        # 5. LISTA DE ROUNDS VÁLIDOS
         rounds_info = []
         if not df_round.empty and 'winner' in df_round.columns:
             for _, row in df_round.iterrows():
                 w = normalizar_time(row['winner'])
                 if w: rounds_info.append({'tick': row['tick'], 'winner': w})
-        
-        # --- MAPA DE TIMES DOS JOGADORES ---
-        # Descobre qual time cada amigo estava EM CADA MOMENTO
-        # player_teams[steamid] = [(tick, team), (tick, team)...]
-        player_teams = {}
-        
-        if not df_spawn.empty and 'team_num' in df_spawn.columns:
-            df_spawn = df_spawn.sort_values('tick')
-            for _, row in df_spawn.iterrows():
-                uid = row.get(col_spawn_id)
-                team = normalizar_time(row.get('team_num'))
-                if uid and team:
-                    if uid not in player_teams: player_teams[uid] = []
-                    player_teams[uid].append({'tick': row['tick'], 'team': team})
 
-        # --- PROCESSAMENTO ---
+        # --- PROCESSAMENTO POR JOGADOR ---
         for nome_exibicao, lista_ids in AMIGOS.items():
             lista_ids = [str(uid).strip() for uid in lista_ids]
             
-            # 1. STATS BÁSICOS
-            if not df_death.empty and col_atk_id in df_death.columns:
+            # COMBATE (Kills/Deaths)
+            if not df_death.empty:
                 my_kills = df_death[df_death[col_atk_id].isin(lista_ids)]
                 stats_partida[nome_exibicao]["Kills"] = len(my_kills)
+                
                 if 'headshot' in my_kills.columns:
                     stats_partida[nome_exibicao]["Headshots"] = len(my_kills[my_kills['headshot']==True])
-                if col_vic_id in df_death.columns:
+                
+                if col_vic_id:
                     stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic_id].isin(lista_ids)])
 
-            if not df_blind.empty and 'attacker_steamid' in df_blind.columns:
-                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind['attacker_steamid'].isin(lista_ids)])
+            # UTILITIES (Flash/Dano)
+            if not df_blind.empty:
+                col_b_atk = next((c for c in df_blind.columns if 'attacker' in c), None)
+                if col_b_atk:
+                    stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_b_atk].isin(lista_ids)])
             
-            if not df_hurt.empty and 'attacker_steamid' in df_hurt.columns:
-                dmg = df_hurt[(df_hurt['attacker_steamid'].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
-                stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
+            if not df_hurt.empty:
+                col_h_atk = next((c for c in df_hurt.columns if 'attacker' in c), None)
+                if col_h_atk and 'weapon' in df_hurt.columns:
+                    dmg = df_hurt[(df_hurt[col_h_atk].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
+                    stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
 
-            # 2. CÁLCULO DE VITÓRIA (CONTABILIDADE ROUND A ROUND)
+            # CÁLCULO DE VITÓRIA (Round a Round)
             meus_pontos = 0
             total_rounds_validos = 0
             
-            # Pega o ID principal para checar o time (assume que todos os IDs do usuario jogam no mesmo time)
-            meu_historico_times = []
+            # Pega o histórico de times desse jogador
+            meu_historico = []
             for uid in lista_ids:
                 if uid in player_teams:
-                    meu_historico_times = player_teams[uid]
-                    break
+                    meu_historico = player_teams[uid]
+                    break # Achou um ID com histórico, usa ele
             
-            if rounds_info and meu_historico_times:
+            if rounds_info and meu_historico:
                 for r in rounds_info:
                     r_tick = r['tick']
                     r_winner = r['winner']
                     
                     # Qual era meu time ANTES desse round acabar?
                     meu_time_no_round = None
+                    # Filtra histórico anterior ao tick do round
+                    passado = [h for h in meu_historico if h['tick'] < r_tick]
+                    if passado:
+                        meu_time_no_round = passado[-1]['team'] # O último registro antes do round acabar
                     
-                    # Filtra spawns anteriores ao fim do round
-                    historico_valido = [h for h in meu_historico_times if h['tick'] < r_tick]
-                    if historico_valido:
-                        meu_time_no_round = historico_valido[-1]['team'] # Pega o mais recente
-                    
-                    # Se eu estava no time que ganhou o round -> Ponto pra mim
                     if meu_time_no_round == r_winner:
                         meus_pontos += 1
                     
                     total_rounds_validos += 1
-
-            # Regra da Vitória: Mais da metade dos rounds?
-            # Ex: Ganhou 13 de 18 rounds -> Vitória
+            
+            # Regra: Ganhou mais da metade dos rounds jogados?
             if total_rounds_validos > 0 and meus_pontos > (total_rounds_validos / 2):
                 stats_partida[nome_exibicao]["Wins"] = 1
-                
+
             # Participação
             if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
                 stats_partida[nome_exibicao]["Matches"] = 1
@@ -217,12 +244,20 @@ def processar_demo(arquivo_upload):
         if sucesso:
             atualizar_banco(stats_partida)
             registrar_demo(file_hash)
+            return True
+        else:
+            st.warning("Nenhum jogador da lista foi encontrado com stats > 0.")
+            return False
 
     except Exception as e:
-        st.error(f"Erro Fatal: {e}")
+        # ISSO VAI MOSTRAR O ERRO NA TELA
+        st.error(f"Erro Fatal no Processamento: {e}")
+        import traceback
+        st.text(traceback.format_exc()) # Mostra detalhes técnicos
+        return False
     finally:
-        os.remove(caminho_temp)
-    return sucesso
+        if os.path.exists(caminho_temp):
+            os.remove(caminho_temp)
 
 # --- 3. INTERFACE ---
 st.title("🔥 CS2 Pro Ranking")
@@ -232,7 +267,7 @@ tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 with tab1:
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
     if arquivo and st.button("🚀 Processar Demo"):
-        with st.spinner("Computando round a round..."):
+        with st.spinner("Processando..."):
             if processar_demo(arquivo):
                 st.success("Dados salvos!")
                 st.balloons()
