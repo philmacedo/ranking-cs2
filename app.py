@@ -398,8 +398,8 @@ elif pagina == "🏆 Ranking Global":
                     st.rerun()
             else: st.error("Senha incorreta ou nome da temporada vazio.")
 
-elif pagina == "🗺️ Estatísticas de Mapas":
-    st.title("🗺️ Estatísticas de Mapas")
+elif pagina == "🗺️ Mapas & Radar":
+    st.title("🗺️ Mapas & Radar")
     st.markdown("Analise os pontos fortes e fracos do time em cada terreno.")
     
     if st.button("🔄 Carregar Mapas"): st.rerun()
