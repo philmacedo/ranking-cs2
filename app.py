@@ -2,34 +2,15 @@ import streamlit as st
 import pandas as pd
 import os
 import tempfile
-from supabase import create_client, Client
 from demoparser2 import DemoParser
 
 st.set_page_config(page_title="CS2 Lab", page_icon="🔬", layout="wide")
 
-# --- CONEXÃO (Mantida para não quebrar, mas não usada no Lab) ---
-try:
-    SUPABASE_URL = st.secrets["supabase"]["url"]
-    SUPABASE_KEY = st.secrets["supabase"]["key"]
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-except: pass
-
-def extrair_dados(parser, evento):
-    """Extrai dados de forma segura"""
-    try:
-        dados = parser.parse_events([evento])
-        if isinstance(dados, list) and len(dados) > 0 and isinstance(dados[0], tuple):
-            return pd.DataFrame(dados[0][1])
-        if isinstance(dados, pd.DataFrame):
-            return dados
-        return pd.DataFrame(dados)
-    except Exception as e:
-        return f"Erro ao ler evento: {e}"
-
 st.title("🔬 Laboratório de Demos CS2")
-st.write("Use esta ferramenta para descobrir como o `demoparser2` vê sua demo.")
+st.warning("Este modo é apenas para descobrir como sua demo salva a vitória.")
 
-arquivo = st.file_uploader("Suba a demo para investigar", type=["dem"])
+# Upload
+arquivo = st.file_uploader("Suba a demo problemática", type=["dem"])
 
 if arquivo:
     # Salva temporário
@@ -38,66 +19,67 @@ if arquivo:
     caminho = tfile.name
     tfile.close()
 
-    parser = DemoParser(caminho)
+    try:
+        parser = DemoParser(caminho)
 
-    # --- ABA 1: DESCOBRIR O VENCEDOR ---
-    st.header("1. Investigação de Vitória")
-    st.info("O sistema vai tentar ler eventos de fim de jogo para achar o placar.")
-    
-    # Eventos promissores para achar o vencedor
-    eventos_fim = ['cs_win_panel_match', 'round_announce_match_win', 'round_end']
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Eventos de Fim de Jogo")
-        for evt in eventos_fim:
-            df = extrair_dados(parser, evt)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                st.write(f"✅ **{evt}** (Encontrado!)")
-                st.dataframe(df.head(5), use_container_width=True)
-            else:
-                st.write(f"❌ {evt} (Vazio)")
-
-    with col2:
-        st.subheader("Análise de Rounds (round_end)")
-        df_round = extrair_dados(parser, "round_end")
-        if isinstance(df_round, pd.DataFrame) and not df_round.empty:
-            if 'winner' in df_round.columns:
-                counts = df_round['winner'].value_counts()
-                st.write("Quem ganhou cada round (2=TR, 3=CT):")
-                st.write(counts)
-                
-                # Tenta converter
-                try:
-                    r_t = len(df_round[df_round['winner'].astype(str).isin(['2', '2.0'])])
-                    r_ct = len(df_round[df_round['winner'].astype(str).isin(['3', '3.0'])])
-                    st.metric("Placar Calculado", f"{r_t} x {r_ct}")
-                except:
-                    st.error("Erro ao converter coluna 'winner'")
-            else:
-                st.error("Coluna 'winner' não existe em round_end!")
-                st.write("Colunas disponíveis:", df_round.columns.tolist())
-
-    # --- ABA 2: LISTAR TUDO ---
-    st.divider()
-    st.header("2. Explorador Geral")
-    
-    if st.button("📂 Listar TODOS os eventos da demo"):
+        # --- 1. QUEM GANHOU OS ROUNDS? ---
+        st.header("1. Análise de Rounds (round_end)")
         try:
-            # Lista todos os eventos disponíveis na demo
-            todos_eventos = parser.list_game_events()
-            st.success(f"Encontrados {len(todos_eventos)} tipos de eventos!")
+            df_round = pd.DataFrame(parser.parse_events(["round_end"]))
             
-            evento_escolhido = st.selectbox("Escolha um evento para ver os dados:", todos_eventos)
+            if not df_round.empty and 'winner' in df_round.columns:
+                # Contagem
+                vitorias_tr = len(df_round[df_round['winner'].astype(str).isin(['2', '2.0'])])
+                vitorias_ct = len(df_round[df_round['winner'].astype(str).isin(['3', '3.0'])])
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Vitórias TR (Time 2)", vitorias_tr)
+                col2.metric("Vitórias CT (Time 3)", vitorias_ct)
+                
+                st.write("👇 **Dados Crus dos Rounds:**")
+                st.dataframe(df_round.head(30), use_container_width=True)
+            else:
+                st.error("❌ Não achei a coluna 'winner' no evento round_end.")
+                st.write("Colunas encontradas:", df_round.columns.tolist())
+        except Exception as e:
+            st.error(f"Erro ao ler rounds: {e}")
+
+        # --- 2. O EVENTO DE FIM DE JOGO ---
+        st.header("2. O Evento Final (cs_win_panel_match)")
+        st.info("Este evento costuma aparecer apenas UMA VEZ no fim do jogo e diz o vencedor oficial.")
+        
+        try:
+            # Tenta ler o evento específico de vitória do CS2
+            df_win = pd.DataFrame(parser.parse_events(["cs_win_panel_match"]))
             
-            if evento_escolhido:
-                df_raw = extrair_dados(parser, evento_escolhido)
-                st.write(f"Mostrando dados brutos de: **{evento_escolhido}**")
-                st.dataframe(df_raw, use_container_width=True)
+            if not df_win.empty:
+                st.success("✅ Evento de fim de jogo ENCONTRADO!")
+                st.dataframe(df_win, use_container_width=True)
+            else:
+                st.warning("⚠️ Evento 'cs_win_panel_match' não encontrado ou vazio.")
                 
         except Exception as e:
-            st.error(f"Erro ao listar eventos: {e}")
+            st.write(f"Não foi possível ler cs_win_panel_match: {e}")
 
-    # Limpeza
-    os.remove(caminho)
+        # --- 3. EM QUE TIME SEUS AMIGOS ESTAVAM? ---
+        st.header("3. Times dos Jogadores")
+        st.info("O sistema precisa saber se seus amigos eram TR (2) ou CT (3).")
+        
+        df_death = pd.DataFrame(parser.parse_events(["player_death"]))
+        if not df_death.empty:
+            # Procura coluna de ID
+            cols = df_death.columns.tolist()
+            col_id = next((c for c in cols if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
+            
+            if col_id and 'attacker_team_num' in df_death.columns:
+                # Mostra uma amostra de jogadores e seus times
+                amostra = df_death[[col_id, 'attacker_name', 'attacker_team_num']].drop_duplicates().head(10)
+                st.dataframe(amostra, use_container_width=True)
+            else:
+                st.error("Não achei colunas de ID ou Time.")
+
+    except Exception as e:
+        st.error(f"Erro fatal: {e}")
+    
+    finally:
+        os.remove(caminho)
