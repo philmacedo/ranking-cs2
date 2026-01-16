@@ -30,28 +30,29 @@ AMIGOS = {
     "Arlon (M4CH)": ["76561197978110112"],
 }
 
-# --- 2. FUNÇÕES AUXILIARES ---
-
-def normalizar_time(valor):
-    """Traduz 'CT', 'TERRORIST', 3.0, 2 para um padrão único ('2' ou '3')"""
-    s = str(valor).upper().strip()
-    if s in ['CT', '3', '3.0']: return '3' # CT
-    if s in ['T', 'TERRORIST', '2', '2.0']: return '2' # TR
-    return None
+# --- 2. FUNÇÕES DE PROTEÇÃO (HASH) ---
 
 def calcular_hash(arquivo_bytes):
+    """Gera uma impressão digital única (MD5) para o arquivo"""
     return hashlib.md5(arquivo_bytes).hexdigest()
 
 def demo_ja_processada(file_hash):
+    """Verifica no banco se essa demo já existe"""
     try:
         response = supabase.table('processed_matches').select('match_hash').eq('match_hash', file_hash).execute()
         return len(response.data) > 0
-    except: return False
+    except Exception as e:
+        st.error(f"Erro ao verificar duplicidade: {e}")
+        return False
 
 def registrar_demo(file_hash):
+    """Salva a digital da demo para bloquear envios futuros"""
     try:
         supabase.table('processed_matches').insert({'match_hash': file_hash}).execute()
-    except: pass
+    except Exception as e:
+        st.warning(f"Aviso: Não foi possível registrar o hash da demo: {e}")
+
+# --- 3. FUNÇÕES DE DADOS ---
 
 def extrair_dados(parser, evento):
     dados = parser.parse_events([evento])
@@ -63,59 +64,75 @@ def extrair_dados(parser, evento):
 def atualizar_banco(stats_novos):
     progresso = st.progress(0)
     total = len(stats_novos)
+    
     for i, (nick, dados) in enumerate(stats_novos.items()):
         if dados['Matches'] > 0:
+            # 1. Busca dados atuais do jogador
             response = supabase.table('player_stats').select("*").eq('nickname', nick).execute()
             
+            # 2. Prepara o pacote de dados novos (SEM WINS)
             novos_dados = {
-                "kills": dados['Kills'], "deaths": dados['Deaths'], "matches": dados['Matches'],
-                "wins": dados['Wins'], "headshots": dados['Headshots'], 
-                "enemies_flashed": dados['EnemiesFlashed'], "utility_damage": dados['UtilityDamage']
+                "kills": dados['Kills'],
+                "deaths": dados['Deaths'],
+                "matches": dados['Matches'],
+                "headshots": dados['Headshots'],
+                "enemies_flashed": dados['EnemiesFlashed'],
+                "utility_damage": dados['UtilityDamage']
             }
-            
+
             try:
                 if response.data:
+                    # UPDATE: Soma com o que já existe
                     atual = response.data[0]
-                    for k in novos_dados: 
+                    for k in novos_dados:
+                        # .get(k, 0) protege contra colunas nulas
                         novos_dados[k] += atual.get(k, 0)
+                    
                     supabase.table('player_stats').update(novos_dados).eq('nickname', nick).execute()
                 else:
+                    # INSERT: Cria novo jogador
                     novos_dados["nickname"] = nick
+                    # Garante que 'wins' inicie zerado se criar agora
+                    novos_dados["wins"] = 0 
                     supabase.table('player_stats').insert(novos_dados).execute()
+                    
             except Exception as e:
-                st.error(f"Erro ao salvar {nick}: {e}")
-                
+                st.error(f"Erro ao salvar dados de {nick}: {e}")
+
         progresso.progress((i + 1) / total)
     progresso.empty()
 
 def processar_demo(arquivo_upload):
-    # 1. Hash de Duplicidade
+    # --- A. PROTEÇÃO CONTRA DUPLICATAS ---
+    # Lê o arquivo para a memória
     arquivo_bytes = arquivo_upload.read()
+    
+    # Calcula o Hash
     file_hash = calcular_hash(arquivo_bytes)
     
+    # Pergunta ao banco
     if demo_ja_processada(file_hash):
-        st.error("⛔ Demo já processada anteriormente!")
-        return False
+        st.error("⛔ **Demo Duplicada!** Esta partida já foi computada anteriormente.")
+        st.stop() # Para o código aqui mesmo
 
+    # --- B. PREPARAÇÃO ---
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".dem")
     tfile.write(arquivo_bytes)
     caminho_temp = tfile.name
     tfile.close()
     
-    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
+    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
     sucesso = False
     
     try:
         parser = DemoParser(caminho_temp)
         
-        # Leitura dos Eventos (AGORA COM PLAYER_SPAWN)
+        # Leitura apenas do essencial
         df_death = extrair_dados(parser, "player_death")
         df_blind = extrair_dados(parser, "player_blind")
         df_hurt = extrair_dados(parser, "player_hurt")
-        df_round = extrair_dados(parser, "round_end")
-        df_spawn = extrair_dados(parser, "player_spawn") # Essencial para saber o time
 
-        # Detecção de Colunas de ID
+        # --- C. DETETIVE DE COLUNAS ---
         col_atk, col_vic = None, None
         if not df_death.empty:
             cols = df_death.columns.tolist()
@@ -124,106 +141,54 @@ def processar_demo(arquivo_upload):
             col_atk = next((c for c in cols if c in possiveis_atk), None)
             col_vic = next((c for c in cols if c in possiveis_vic), None)
 
-        # Detecção de Colunas do Spawn (user_steamid ou similar)
-        col_spawn_id = None
-        if not df_spawn.empty:
-            cols_spawn = df_spawn.columns.tolist()
-            # Geralmente é user_steamid ou userid_steamid
-            col_spawn_id = next((c for c in cols_spawn if c in ['user_steamid', 'steamid', 'player_steamid', 'user_xuid']), None)
-
         if not col_atk:
-            st.warning("IDs não encontrados na demo.")
+            st.warning("⚠️ Não foi possível ler os IDs dos jogadores nesta demo.")
             return False
 
-        # Limpeza de IDs
-        for df in [df_death, df_blind, df_hurt, df_spawn]:
-            # Limpa colunas de ataque/vítima
-            if not df.empty and col_atk and col_atk in df.columns: 
+        # Limpeza de IDs (remove .0 se existir)
+        for df in [df_death, df_blind, df_hurt]:
+            if not df.empty and col_atk in df.columns: 
                 df[col_atk] = df[col_atk].astype(str).str.replace(r'\.0$', '', regex=True)
-            if not df.empty and col_vic and col_vic in df.columns: 
+            if not df.empty and col_vic in df.columns: 
                 df[col_vic] = df[col_vic].astype(str).str.replace(r'\.0$', '', regex=True)
-            # Limpa coluna de spawn
-            if not df.empty and col_spawn_id and col_spawn_id in df.columns:
-                df[col_spawn_id] = df[col_spawn_id].astype(str).str.replace(r'\.0$', '', regex=True)
 
-        # PROCESSAMENTO
+        # --- D. CÁLCULOS (SEM WIN RATE) ---
         for nome_exibicao, lista_ids in AMIGOS.items():
             lista_ids = [str(uid).strip() for uid in lista_ids]
             
-            # KILLS
+            # 1. Kills e HS
             if not df_death.empty and col_atk in df_death.columns:
                 meus_kills = df_death[df_death[col_atk].isin(lista_ids)]
                 stats_partida[nome_exibicao]["Kills"] = len(meus_kills)
+                
                 if 'headshot' in meus_kills.columns:
                     stats_partida[nome_exibicao]["Headshots"] = len(meus_kills[meus_kills['headshot'] == True])
+                
+                # Mortes
                 if col_vic in df_death.columns:
                     stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic].isin(lista_ids)])
 
-            # FLASHS
+            # 2. Cegos (Flashed)
             if not df_blind.empty and col_atk in df_blind.columns:
                 stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_atk].isin(lista_ids)])
             
-            # DANO
+            # 3. Dano de Utilitário
             if not df_hurt.empty and col_atk in df_hurt.columns and 'weapon' in df_hurt.columns:
-                dmg = df_hurt[(df_hurt[col_atk].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
+                dmg = df_hurt[
+                    (df_hurt[col_atk].isin(lista_ids)) & 
+                    (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))
+                ]
                 stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
 
-            # VITÓRIA (Round a Round com Spawn Check)
-            meus_rounds_ganhos = 0
-            total_rounds = 0
-            
-            if not df_round.empty:
-                # Ordena Spawns por tempo para saber o time em cada momento
-                if not df_spawn.empty and col_spawn_id:
-                    df_spawn_sorted = df_spawn.sort_values('tick')
-                else:
-                    df_spawn_sorted = pd.DataFrame()
-
-                for _, round_row in df_round.iterrows():
-                    round_tick = round_row['tick']
-                    winner_team = normalizar_time(round_row['winner'])
-                    
-                    if not winner_team: continue 
-
-                    # Descobre o time do jogador neste round especificamente
-                    my_team = None
-                    
-                    # 1. Tenta pelo Spawn (Mais confiável)
-                    if not df_spawn_sorted.empty and col_spawn_id:
-                        # Pega o último spawn antes do fim do round
-                        spawns_before = df_spawn_sorted[
-                            (df_spawn_sorted['tick'] <= round_tick) & 
-                            (df_spawn_sorted[col_spawn_id].isin(lista_ids))
-                        ]
-                        if not spawns_before.empty:
-                            last_spawn = spawns_before.iloc[-1]
-                            if 'team_num' in last_spawn:
-                                my_team = normalizar_time(last_spawn['team_num'])
-                                if not my_team and 'user_team_num' in last_spawn: # Fallback de nome
-                                    my_team = normalizar_time(last_spawn['user_team_num'])
-
-                    # 2. Se não achou no spawn, tenta kill/death (Fallback)
-                    if not my_team and not df_death.empty:
-                        # ... lógica antiga de death ...
-                        pass # Simplificado aqui pois o spawn deve cobrir 99%
-
-                    # Se achou o time e é igual ao vencedor
-                    if my_team == winner_team:
-                        meus_rounds_ganhos += 1
-                    
-                    total_rounds += 1
-            
-            # Ganhou mais da metade dos rounds?
-            if total_rounds > 0 and meus_rounds_ganhos > (total_rounds / 2):
-                stats_partida[nome_exibicao]["Wins"] = 1
-                
+            # Check de Participação
             if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
                 stats_partida[nome_exibicao]["Matches"] = 1
                 sucesso = True
 
+        # --- E. FINALIZAÇÃO ---
         if sucesso:
             atualizar_banco(stats_partida)
-            registrar_demo(file_hash)
+            registrar_demo(file_hash) # <--- AQUI BLOQUEIA O REENVIO FUTURO
 
     except Exception as e:
         st.error(f"Erro no processamento: {e}")
@@ -231,45 +196,58 @@ def processar_demo(arquivo_upload):
         os.remove(caminho_temp)
     return sucesso
 
-# --- 3. INTERFACE ---
+# --- 4. INTERFACE ---
 st.title("🔥 CS2 Pro Ranking")
+st.caption("Sistema protegido contra demos duplicadas 🛡️")
+
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
-    if arquivo and st.button("🚀 Processar Demo"):
-        with st.spinner("Processando todos os rounds..."):
-            if processar_demo(arquivo):
-                st.success("Ranking Atualizado!")
-                st.balloons()
+    
+    if arquivo is not None:
+        if st.button("🚀 Processar Demo"):
+            with st.spinner("Analisando e verificando duplicatas..."):
+                if processar_demo(arquivo):
+                    st.success("✅ Demo processada e salva com sucesso!")
+                    st.balloons()
+                # Se for duplicada, o aviso aparece dentro da função processar_demo
 
 with tab2:
-    if st.button("🔄 Atualizar"): st.rerun()
+    if st.button("🔄 Atualizar Tabela"):
+        st.rerun()
+        
     response = supabase.table('player_stats').select("*").execute()
+    
     if response.data:
         df = pd.DataFrame(response.data)
         
-        # Garante colunas
-        for col in ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']:
+        # Garante colunas essenciais
+        cols_check = ['kills', 'deaths', 'matches', 'headshots', 'utility_damage', 'enemies_flashed']
+        for col in cols_check:
             if col not in df.columns: df[col] = 0
             
-        df['KD'] = df.apply(lambda x: x['kills']/x['deaths'] if x['deaths']>0 else x['kills'], axis=1)
-        df['Win%'] = df.apply(lambda x: (x['wins']/x['matches']*100) if x['matches']>0 else 0, axis=1)
-        df['HS%'] = df.apply(lambda x: (x['headshots']/x['kills']*100) if x['kills']>0 else 0, axis=1)
+        # Cálculos de Rate
+        df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
+        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0, axis=1)
         
-        # --- TABELA FINAL ---
+        # Removemos Win% da visualização já que paramos de calcular
+        df = df.sort_values(by='KD', ascending=False)
+        
         st.dataframe(
-            df.sort_values(by='KD', ascending=False)[['nickname', 'KD', 'Win%', 'kills', 'deaths', 'HS%', 'enemies_flashed']],
+            df[['nickname', 'KD', 'kills', 'deaths', 'matches', 'HS%', 'enemies_flashed', 'utility_damage']],
             hide_index=True,
             column_config={
                 "nickname": "Jogador",
                 "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "Win%": st.column_config.NumberColumn("Win Rate", format="%.0f%% 🏆"),
-                "HS%": st.column_config.NumberColumn("HS Rate", format="%.0f%% 🎯"),
+                "HS%": st.column_config.NumberColumn("HS %", format="%.0f%% 🎯"),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡", format="%d"),
+                "utility_damage": st.column_config.NumberColumn("Dano Util 💣", format="%d"),
                 "kills": "Kills",
-                "deaths": "Mortes"
+                "deaths": "Mortes",
+                "matches": "Partidas"
             },
             use_container_width=True
         )
-    else: st.info("Ranking vazio.")
+    else:
+        st.info("Ranking vazio.")
