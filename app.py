@@ -268,7 +268,7 @@ with tab2:
         df['Win%'] = df.apply(lambda x: (x['wins'] / x['matches']), axis=1) # Mantém decimal para formatar depois
         df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills']), axis=1)
         
-        df = df.sort_values(by='KD', ascending=False)
+        df = df.sort_values(by='K/D', ascending=False)
         
         # --- TABELA VISUAL (CORRIGIDA) ---
         st.dataframe(
