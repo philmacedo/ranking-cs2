@@ -33,9 +33,8 @@ AMIGOS = {
 # --- 2. FUNÇÕES ---
 
 def normalizar_time(valor):
-    """Garante que o time seja sempre '2' (TR) ou '3' (CT)"""
+    """Retorna '2' para TR e '3' para CT"""
     try:
-        if pd.isna(valor): return None
         s = str(valor).upper().strip().replace('.0', '')
         if s in ['CT', '3']: return '3'
         if s in ['T', 'TERRORIST', '2']: return '2'
@@ -58,7 +57,7 @@ def registrar_demo(file_hash):
 
 def extrair_dados(parser, evento):
     try:
-        # Verifica se o evento existe antes de tentar extrair
+        # Verifica se o evento existe na demo
         eventos_disponiveis = parser.list_game_events()
         if evento not in eventos_disponiveis: return pd.DataFrame()
 
@@ -96,7 +95,7 @@ def atualizar_banco(stats_novos):
     progresso.empty()
 
 def processar_demo(arquivo_upload):
-    # 1. Check Duplicidade
+    # 1. Check Hash
     arquivo_bytes = arquivo_upload.read()
     file_hash = calcular_hash(arquivo_bytes)
     
@@ -120,9 +119,8 @@ def processar_demo(arquivo_upload):
         df_blind = extrair_dados(parser, "player_blind")
         df_hurt = extrair_dados(parser, "player_hurt")
         df_round = extrair_dados(parser, "round_end")
-        df_spawn = extrair_dados(parser, "player_spawn")
-
-        # Detecção de Colunas
+        
+        # Colunas ID
         col_atk, col_vic = None, None
         if not df_death.empty:
             cols = df_death.columns.tolist()
@@ -131,28 +129,25 @@ def processar_demo(arquivo_upload):
             possiveis_vic = ['user_steamid', 'user_xuid', 'user_player_id', 'user_steamid64']
             col_vic = next((c for c in cols if c in possiveis_vic), None)
 
-        col_spawn = None
-        if not df_spawn.empty:
-            cols_spawn = df_spawn.columns.tolist()
-            col_spawn = next((c for c in cols_spawn if c in ['user_steamid', 'steamid', 'player_steamid', 'user_xuid']), None)
-
         if not col_atk:
             st.warning("⚠️ IDs não encontrados na demo.")
             return False
 
-        # Limpeza de IDs
-        for df in [df_death, df_blind, df_hurt, df_spawn]:
-            for c in [col_atk, col_vic, col_spawn]:
+        # Limpeza IDs
+        for df in [df_death, df_blind, df_hurt]:
+            for c in [col_atk, col_vic]:
                 if c and c in df.columns:
                     df[c] = df[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-        # --- LÓGICA DE VITÓRIA ---
-        # Filtra apenas rounds válidos (ignora warmup/empates)
-        rounds_validos = pd.DataFrame()
+        # --- QUEM GANHOU A PARTIDA? (SIMPLIFICADO) ---
+        winning_team = None
         if not df_round.empty and 'winner' in df_round.columns:
-            # Mantém apenas onde vencedor foi 2 (TR) ou 3 (CT)
-            df_round['winner_norm'] = df_round['winner'].apply(normalizar_time)
-            rounds_validos = df_round.dropna(subset=['winner_norm'])
+            # Conta rounds ganhos por cada lado
+            rounds_tr = len(df_round[df_round['winner'].apply(normalizar_time) == '2'])
+            rounds_ct = len(df_round[df_round['winner'].apply(normalizar_time) == '3'])
+            
+            if rounds_tr > rounds_ct: winning_team = '2'
+            elif rounds_ct > rounds_tr: winning_team = '3'
 
         # PROCESSAMENTO
         for nome_exibicao, lista_ids in AMIGOS.items():
@@ -176,53 +171,29 @@ def processar_demo(arquivo_upload):
                 dmg = df_hurt[(df_hurt[col_atk].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
                 stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
 
-            # VITÓRIA (Algoritmo Refinado)
-            rounds_ganhos = 0
-            total_rounds_validos = 0
-            
-            if not rounds_validos.empty:
-                for _, row in rounds_validos.iterrows():
-                    tick = row['tick']
-                    winner = row['winner_norm']
-                    
-                    # Procura o time do jogador neste momento
-                    my_team = None
-                    
-                    # 1. Tenta pelo Spawn (mais recente antes do fim do round)
-                    if not df_spawn.empty and col_spawn:
-                        spawns = df_spawn[(df_spawn['tick'] < tick) & (df_spawn[col_spawn].isin(lista_ids))]
-                        if not spawns.empty:
-                            last = spawns.iloc[-1]
-                            # Tenta várias colunas de time
-                            for t_col in ['team_num', 'user_team_num', 'player_team_num']:
-                                if t_col in last:
-                                    t = normalizar_time(last[t_col])
-                                    if t: 
-                                        my_team = t
-                                        break
-                    
-                    # 2. Se falhar, tenta pela Morte/Kill (mais recente antes do fim do round)
-                    if not my_team and not df_death.empty:
-                        events = df_death[
-                            (df_death['tick'] < tick) & 
-                            ((df_death[col_atk].isin(lista_ids)) | (df_death[col_vic].isin(lista_ids)))
-                        ]
-                        if not events.empty:
-                            last = events.iloc[-1]
-                            if last[col_atk] in lista_ids and 'attacker_team_num' in last:
-                                my_team = normalizar_time(last['attacker_team_num'])
-                            elif last[col_vic] in lista_ids and 'user_team_num' in last:
-                                my_team = normalizar_time(last['user_team_num'])
-
-                    if my_team == winner:
-                        rounds_ganhos += 1
-                    
-                    total_rounds_validos += 1
-
-            # Regra: Ganhou a maioria dos rounds VÁLIDOS?
-            if total_rounds_validos > 0 and rounds_ganhos > (total_rounds_validos / 2):
-                stats_partida[nome_exibicao]["Wins"] = 1
+            # VITÓRIA (Lógica: Qual foi o time dele na última vez que apareceu?)
+            if winning_team and not df_death.empty:
+                # Procura o último evento onde ele aparece (Matou ou Morreu)
+                last_event = None
                 
+                # Filtra eventos dele
+                my_events = df_death[
+                    (df_death[col_atk].isin(lista_ids)) | 
+                    (df_death[col_vic].isin(lista_ids))
+                ].sort_values('tick')
+                
+                if not my_events.empty:
+                    last_row = my_events.iloc[-1]
+                    # Tenta descobrir o time dele nessa última aparição
+                    my_team = None
+                    if last_row[col_atk] in lista_ids and 'attacker_team_num' in last_row:
+                        my_team = normalizar_time(last_row['attacker_team_num'])
+                    elif last_row[col_vic] in lista_ids and 'user_team_num' in last_row:
+                        my_team = normalizar_time(last_row['user_team_num'])
+                    
+                    if my_team == winning_team:
+                        stats_partida[nome_exibicao]["Wins"] = 1
+
             # Participação
             if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
                 stats_partida[nome_exibicao]["Matches"] = 1
@@ -244,7 +215,7 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
+    arquivo = st.file_uploader("Upload do Arquivo .dem", type=["dem"])
     if arquivo and st.button("🚀 Processar Demo"):
         with st.spinner("Analisando partida..."):
             if processar_demo(arquivo):
@@ -263,27 +234,39 @@ with tab2:
         for c in cols_check:
             if c not in df.columns: df[c] = 0
             
-        # Cálculos
-        df['K/D'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-        df['Win%'] = df.apply(lambda x: (x['wins'] / x['matches']), axis=1) # Mantém decimal para formatar depois
-        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills']), axis=1)
+        # Cálculos de Rate
+        # KD (Sem a barra para não dar erro no sort)
+        df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         
-        df = df.sort_values(by='K/D', ascending=False)
+        # Win Rate (0 a 1 para barra de progresso)
+        df['WinRate'] = df.apply(lambda x: (x['wins'] / x['matches']) if x['matches'] > 0 else 0, axis=1)
         
-        # --- TABELA VISUAL (CORRIGIDA) ---
+        # HS Rate (Multiplicado por 100 para aparecer bonito no NumberColumn)
+        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0, axis=1)
+        
+        # Ordenação
+        df = df.sort_values(by='KD', ascending=False)
+        
+        # --- TABELA VISUAL ---
         st.dataframe(
-            df[['nickname', 'K/D', 'Win%', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
+            df[['nickname', 'KD', 'WinRate', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
             hide_index=True,
             column_config={
                 "nickname": "Jogador",
-                "K/D": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "Win%": st.column_config.ProgressColumn(
+                "KD": st.column_config.NumberColumn(
+                    "K/D", 
+                    format="%.2f ⭐"
+                ),
+                "WinRate": st.column_config.ProgressColumn(
                     "Win Rate", 
                     format="%.0f%%", 
                     min_value=0, 
                     max_value=1
                 ),
-                "HS%": st.column_config.NumberColumn("HS %", format="%.4f%% 🎯"),
+                "HS%": st.column_config.NumberColumn(
+                    "HS %", 
+                    format="%.2f%% 🎯"
+                ),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
                 "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
                 "kills": "Kills",
