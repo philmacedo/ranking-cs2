@@ -18,7 +18,6 @@ except FileNotFoundError:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- LISTA DE AMIGOS (COM SMURFS) ---
-
 AMIGOS = {
     "Ph (Ph1L)": [
         "76561198301569089",  # Conta Principal
@@ -135,14 +134,22 @@ def processar_demo(arquivo_upload):
             if not df.empty and col_vic in df.columns: 
                 df[col_vic] = df[col_vic].astype(str).str.replace(r'\.0$', '', regex=True)
 
-        # 2. Lógica de Vitória
+        # 2. Lógica de Vitória (TIME)
         winning_team_num = None
         if not df_round.empty and 'winner' in df_round.columns:
             try:
+                # Conta quantos rounds cada lado ganhou
                 rounds_t = len(df_round[df_round['winner'] == 2])
                 rounds_ct = len(df_round[df_round['winner'] == 3])
-                winning_team_num = 2 if rounds_t > rounds_ct else 3
-            except: pass
+                
+                # Define o número do time vencedor (2 ou 3)
+                if rounds_t > rounds_ct:
+                    winning_team_num = 2
+                elif rounds_ct > rounds_t:
+                    winning_team_num = 3
+                # Empate fica None
+            except: 
+                pass
 
         # 3. Processamento (AGORA SUPORTA MÚLTIPLOS IDS)
         for nome_exibicao, lista_ids in AMIGOS.items():
@@ -162,11 +169,11 @@ def processar_demo(arquivo_upload):
                 if col_vic in df_death.columns:
                     stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic].isin(lista_ids)])
 
-            # Flashs
+            # Flashs (Enemies Flashed)
             if not df_blind.empty and col_atk in df_blind.columns:
                 stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_atk].isin(lista_ids)])
 
-            # Dano
+            # Dano Utilitário
             if not df_hurt.empty and col_atk in df_hurt.columns and 'weapon' in df_hurt.columns and 'dmg_health' in df_hurt.columns:
                 granadas = ['hegrenade', 'inferno', 'incgrenade']
                 meu_dano = df_hurt[
@@ -175,21 +182,29 @@ def processar_demo(arquivo_upload):
                 ]
                 stats_partida[nome_exibicao]["UtilityDamage"] = int(meu_dano['dmg_health'].sum())
 
-            # Vitória
+            # --- CORREÇÃO DA VITÓRIA ---
             if winning_team_num and not df_death.empty:
                 player_team = None
-                # Procura qualquer ID da lista atacando
+                
+                # Tenta descobrir o time pelo último evento de ataque
                 if col_atk in df_death.columns and 'attacker_team_num' in df_death.columns:
                     last = df_death[df_death[col_atk].isin(lista_ids)]
-                    if not last.empty: player_team = last.iloc[-1]['attacker_team_num']
+                    if not last.empty: 
+                        player_team = last.iloc[-1]['attacker_team_num']
                 
-                # Procura qualquer ID da lista morrendo
-                if not player_team and col_vic in df_death.columns and 'user_team_num' in df_death.columns:
+                # Se não achou, tenta pelo último evento de morte
+                if pd.isna(player_team) and col_vic in df_death.columns and 'user_team_num' in df_death.columns:
                     last = df_death[df_death[col_vic].isin(lista_ids)]
-                    if not last.empty: player_team = last.iloc[-1]['user_team_num']
+                    if not last.empty: 
+                        player_team = last.iloc[-1]['user_team_num']
                 
-                if player_team == winning_team_num:
-                    stats_partida[nome_exibicao]["Wins"] = 1
+                # Comparação Segura (Converte tudo para inteiro para evitar erro 2.0 != 2)
+                if player_team is not None and not pd.isna(player_team):
+                    try:
+                        if int(float(player_team)) == int(winning_team_num):
+                            stats_partida[nome_exibicao]["Wins"] = 1
+                    except:
+                        pass # Ignora erro de conversão
             
             # Participação
             if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
@@ -231,17 +246,20 @@ with tab2:
     
     if response.data:
         df = pd.DataFrame(response.data)
+        # Garante que as colunas existem
         for col in ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']:
             if col not in df.columns: df[col] = 0
         
+        # Cálculos
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['Win%'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0, axis=1)
         df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0, axis=1)
         
         df = df.sort_values(by='KD', ascending=False)
         
+        # --- TABELA FINAL COM ENEMIES_FLASHED ADICIONADO ---
         st.dataframe(
-            df[['nickname', 'KD', 'Win%', 'kills', 'deaths', 'matches', 'HS%', 'utility_damage']],
+            df[['nickname', 'KD', 'Win%', 'kills', 'deaths', 'matches', 'HS%', 'utility_damage', 'enemies_flashed']],
             hide_index=True,
             column_config={
                 "nickname": "Jogador",
@@ -249,6 +267,7 @@ with tab2:
                 "Win%": st.column_config.NumberColumn("Win Rate", format="%.0f%% 🏆"),
                 "HS%": st.column_config.NumberColumn("HS Rate", format="%.0f%% 🎯"),
                 "utility_damage": st.column_config.NumberColumn("Dano Util", format="%.0f 💣"),
+                "enemies_flashed": st.column_config.NumberColumn("Inimigos Cegos", format="%.0f 💡"),
             },
             use_container_width=True
         )
