@@ -399,7 +399,7 @@ elif pagina == "🏆 Ranking Global":
             else: st.error("Senha incorreta ou nome da temporada vazio.")
 
 
-elif pagina == "🗺️ Mapas & Radars":
+elif pagina == "🗺️ Mapas & Radar":
     st.title("🗺️ Mapas & Radar")
     st.markdown("Analise o desempenho e veja quais mapas precisam ser treinados.")
     
