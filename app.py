@@ -6,9 +6,8 @@ from supabase import create_client, Client
 from demoparser2 import DemoParser
 
 # --- 1. CONFIGURAÇÃO ---
-st.set_page_config(page_title="CS2 Pro Ranking", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="CS2 Pro Ranking", page_icon="🕵️", layout="wide")
 
-# Conexão Supabase
 try:
     SUPABASE_URL = st.secrets["supabase"]["url"]
     SUPABASE_KEY = st.secrets["supabase"]["key"]
@@ -18,10 +17,10 @@ except FileNotFoundError:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- LISTA DE AMIGOS (Nome: SteamID64) ---
+# --- LISTA DE AMIGOS ---
 AMIGOS = {
     "Ph (Ph1L)": "76561198301569089", 
-    "Pablo (Cyrax)": "76561198143002755",  # pablo
+    "Pablo (Cyrax)": "76561198143002755",
     "Bruno (Safadinha)": "76561198187604726",
     "Daniel (Ocharadas)": "76561199062357951",
     "LEO (Trewan)": "76561198160033077",
@@ -31,9 +30,7 @@ AMIGOS = {
 }
 
 # --- 2. FUNÇÕES ---
-
 def atualizar_banco(stats_novos):
-    """Envia os dados acumulados para a nuvem"""
     progresso = st.progress(0)
     total = len(stats_novos)
     contador = 0
@@ -42,30 +39,29 @@ def atualizar_banco(stats_novos):
         if dados['Matches'] > 0:
             response = supabase.table('player_stats').select("*").eq('nickname', nick).execute()
             
+            novos_dados = {
+                "kills": dados['Kills'],
+                "deaths": dados['Deaths'],
+                "matches": dados['Matches'],
+                "wins": dados['Wins'],
+                "headshots": dados['Headshots'],
+                "enemies_flashed": dados['EnemiesFlashed'],
+                "utility_damage": dados['UtilityDamage']
+            }
+
             if response.data:
                 atual = response.data[0]
-                novos_dados = {
-                    "kills": atual['kills'] + dados['Kills'],
-                    "deaths": atual['deaths'] + dados['Deaths'],
-                    "matches": atual['matches'] + dados['Matches'],
-                    "wins": atual.get('wins', 0) + dados['Wins'],
-                    "headshots": atual.get('headshots', 0) + dados['Headshots'],
-                    "enemies_flashed": atual.get('enemies_flashed', 0) + dados['EnemiesFlashed'],
-                    "utility_damage": atual.get('utility_damage', 0) + dados['UtilityDamage']
-                }
+                novos_dados["kills"] += atual.get('kills', 0)
+                novos_dados["deaths"] += atual.get('deaths', 0)
+                novos_dados["matches"] += atual.get('matches', 0)
+                novos_dados["wins"] += atual.get('wins', 0)
+                novos_dados["headshots"] += atual.get('headshots', 0)
+                novos_dados["enemies_flashed"] += atual.get('enemies_flashed', 0)
+                novos_dados["utility_damage"] += atual.get('utility_damage', 0)
                 supabase.table('player_stats').update(novos_dados).eq('nickname', nick).execute()
             else:
-                primeiros_dados = {
-                    "nickname": nick,
-                    "kills": dados['Kills'],
-                    "deaths": dados['Deaths'],
-                    "matches": dados['Matches'],
-                    "wins": dados['Wins'],
-                    "headshots": dados['Headshots'],
-                    "enemies_flashed": dados['EnemiesFlashed'],
-                    "utility_damage": dados['UtilityDamage']
-                }
-                supabase.table('player_stats').insert(primeiros_dados).execute()
+                novos_dados["nickname"] = nick
+                supabase.table('player_stats').insert(novos_dados).execute()
         
         contador += 1
         progresso.progress(contador / total)
@@ -77,111 +73,92 @@ def processar_demo(arquivo_upload):
     caminho_temp = tfile.name
     tfile.close()
     
-    # Inicializa estatísticas zeradas
-    stats_partida = {nome: {
-        "Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, 
-        "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0
-    } for nome in AMIGOS.keys()}
-    
+    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
     sucesso = False
     
     try:
         parser = DemoParser(caminho_temp)
         
-        # 1. Extração de Eventos
+        # 1. Extração
         events_death = parser.parse_events(["player_death"])
         events_blind = parser.parse_events(["player_blind"])
         events_hurt = parser.parse_events(["player_hurt"])
         events_round = parser.parse_events(["round_end"])
         
-        # DataFrames
         df_death = pd.DataFrame(events_death)
         df_blind = pd.DataFrame(events_blind)
         df_hurt = pd.DataFrame(events_hurt)
         df_round = pd.DataFrame(events_round)
 
-        # --- ADICIONE ISTO AQUI PARA DEBUGAR ---
-        st.write("🔍 Debug - Colunas encontradas na Morte:", df_death.columns.tolist() if not df_death.empty else "Tabela Vazia")
-        st.write("🔍 Debug - Exemplo de dados:", df_death.head(2) if not df_death.empty else "Sem dados")
-        # ---------------------------------------
+        # --- DETETIVE DE COLUNAS (AUTO-CORREÇÃO) ---
+        if not df_death.empty:
+            cols = df_death.columns.tolist()
+            st.info(f"📋 Colunas encontradas na demo: {cols}") # MOSTRA A LISTA NA TELA
+            
+            # Tenta achar o nome certo da coluna de ID
+            col_atk = next((c for c in cols if c in ['attacker_steamid', 'attacker_xuid', 'attacker_player_id']), None)
+            col_vic = next((c for c in cols if c in ['user_steamid', 'user_xuid', 'user_player_id']), None)
+            
+            if not col_atk or not col_vic:
+                st.error(f"⚠️ IDs não encontrados! Colunas disponíveis: {cols}")
+                return False
+        else:
+            col_atk, col_vic = 'attacker_steamid', 'user_steamid'
 
-        # Conversão de IDs para Texto (Segurança Crítica)
+        # Conversão para texto
         for df in [df_death, df_blind, df_hurt]:
-            if not df.empty and 'attacker_steamid' in df.columns:
-                df['attacker_steamid'] = df['attacker_steamid'].astype(str)
-            if not df.empty and 'user_steamid' in df.columns:
-                df['user_steamid'] = df['user_steamid'].astype(str)
+            if not df.empty and col_atk in df.columns: df[col_atk] = df[col_atk].astype(str)
+            if not df.empty and col_vic in df.columns: df[col_vic] = df[col_vic].astype(str)
 
-        # 2. Lógica de Vitória (Quem ganhou?)
+        # 2. Lógica de Vitória
         winning_team_num = None
         if not df_round.empty and 'winner' in df_round.columns:
             try:
-                # 2 = Terrorist, 3 = CT
                 rounds_t = len(df_round[df_round['winner'] == 2])
                 rounds_ct = len(df_round[df_round['winner'] == 3])
-                if rounds_t > rounds_ct: winning_team_num = 2
-                elif rounds_ct > rounds_t: winning_team_num = 3
+                winning_team_num = 2 if rounds_t > rounds_ct else 3
             except: pass
 
-        # 3. Processamento Jogador por Jogador
+        # 3. Processamento com Nomes Dinâmicos
         for nome_exibicao, steam_id in AMIGOS.items():
             
-            # --- A. COMBATE (Kills/Deaths/HS) ---
-            if not df_death.empty:
-                # Kills (Verifica se attacker existe para não pegar suicídio)
-                if 'attacker_steamid' in df_death.columns:
-                    meus_kills = df_death[df_death['attacker_steamid'] == steam_id]
-                    stats_partida[nome_exibicao]["Kills"] = len(meus_kills)
-                    
-                    if 'headshot' in meus_kills.columns:
-                        stats_partida[nome_exibicao]["Headshots"] = len(meus_kills[meus_kills['headshot'] == True])
+            if not df_death.empty and col_atk in df_death.columns:
+                # Kills
+                meus_kills = df_death[df_death[col_atk] == steam_id]
+                stats_partida[nome_exibicao]["Kills"] = len(meus_kills)
+                if 'headshot' in meus_kills.columns:
+                    stats_partida[nome_exibicao]["Headshots"] = len(meus_kills[meus_kills['headshot'] == True])
+                
+                # Deaths
+                stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic] == steam_id])
 
-                # Deaths (Verifica user existe)
-                if 'user_steamid' in df_death.columns:
-                    stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death['user_steamid'] == steam_id])
+            # Flashs
+            if not df_blind.empty and col_atk in df_blind.columns:
+                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_atk] == steam_id])
 
-            # --- B. FLASHS (Cegueira) ---
-            if not df_blind.empty and 'attacker_steamid' in df_blind.columns:
-                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind['attacker_steamid'] == steam_id])
+            # Dano
+            if not df_hurt.empty and col_atk in df_hurt.columns and 'weapon' in df_hurt.columns and 'dmg_health' in df_hurt.columns:
+                meu_dano = df_hurt[(df_hurt[col_atk] == steam_id) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
+                stats_partida[nome_exibicao]["UtilityDamage"] = int(meu_dano['dmg_health'].sum())
 
-            # --- C. DANO DE GRANADA ---
-            # Requer attacker, weapon e dmg_health
-            if not df_hurt.empty:
-                cols_necessarias = ['attacker_steamid', 'weapon', 'dmg_health']
-                # Só processa se todas as colunas existirem
-                if all(col in df_hurt.columns for col in cols_necessarias):
-                    granadas = ['hegrenade', 'inferno', 'incgrenade']
-                    meu_dano = df_hurt[
-                        (df_hurt['attacker_steamid'] == steam_id) & 
-                        (df_hurt['weapon'].isin(granadas))
-                    ]
-                    stats_partida[nome_exibicao]["UtilityDamage"] = int(meu_dano['dmg_health'].sum())
-
-            # --- D. VITÓRIAS ---
-            # Tenta inferir o time do jogador baseado nas kills/mortes
+            # Vitória
             if winning_team_num and not df_death.empty:
+                # Tenta achar time
                 player_team = None
+                # Atacando
+                if col_atk in df_death.columns and 'attacker_team_num' in df_death.columns:
+                    last = df_death[df_death[col_atk] == steam_id]
+                    if not last.empty: player_team = last.iloc[-1]['attacker_team_num']
+                # Defendendo (se não achou)
+                if not player_team and col_vic in df_death.columns and 'user_team_num' in df_death.columns:
+                    last = df_death[df_death[col_vic] == steam_id]
+                    if not last.empty: player_team = last.iloc[-1]['user_team_num']
                 
-                # Procura time onde atacou
-                if 'attacker_steamid' in df_death.columns and 'attacker_team_num' in df_death.columns:
-                    last_atk = df_death[df_death['attacker_steamid'] == steam_id]
-                    if not last_atk.empty:
-                        player_team = last_atk.iloc[-1]['attacker_team_num']
-                
-                # Procura time onde morreu (fallback)
-                if player_team is None and 'user_steamid' in df_death.columns and 'user_team_num' in df_death.columns:
-                    last_vic = df_death[df_death['user_steamid'] == steam_id]
-                    if not last_vic.empty:
-                        player_team = last_vic.iloc[-1]['user_team_num']
-
                 if player_team == winning_team_num:
                     stats_partida[nome_exibicao]["Wins"] = 1
             
-            # --- E. PARTICIPAÇÃO ---
-            jogou = (stats_partida[nome_exibicao]["Kills"] > 0) or \
-                    (stats_partida[nome_exibicao]["Deaths"] > 0)
-            
-            if jogou:
+            # Participação
+            if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
                 stats_partida[nome_exibicao]["Matches"] = 1
                 sucesso = True
 
@@ -192,56 +169,34 @@ def processar_demo(arquivo_upload):
         st.error(f"Erro ao processar: {e}")
     finally:
         os.remove(caminho_temp)
-        
     return sucesso
 
 # --- 3. INTERFACE ---
-st.title("🔥 CS2 Pro Ranking")
+st.title("🔥 CS2 Pro Ranking - Modo Detetive")
 
-tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking Completo"])
+tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    st.write("Suba a demo. O sistema calcula Kills, HS, Dano de Granada e Vitórias.")
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
-    
-    if arquivo is not None:
-        if st.button("🚀 Processar Demo"):
-            with st.spinner("Processando..."):
-                if processar_demo(arquivo):
-                    st.success("Sucesso! Estatísticas salvas.")
-                    st.balloons()
-                else:
-                    st.warning("Demo processada, mas nenhum jogador da lista foi encontrado.")
+    if arquivo and st.button("🚀 Processar"):
+        with st.spinner("Processando..."):
+            if processar_demo(arquivo):
+                st.success("Sucesso!")
+                st.balloons()
+            else:
+                st.warning("Nenhum jogador encontrado ou demo incompatível.")
 
 with tab2:
-    if st.button("🔄 Atualizar Tabela"):
-        st.rerun()
-    
+    if st.button("🔄 Atualizar"): st.rerun()
     response = supabase.table('player_stats').select("*").execute()
     if response.data:
         df = pd.DataFrame(response.data)
+        for c in ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage']:
+            if c not in df.columns: df[c] = 0
         
-        # Garante colunas (Preenche com 0 se faltar algo no banco)
-        for col in ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']:
-            if col not in df.columns: df[col] = 0
-
-        # Cálculos Finais
-        df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-        df['WinRate'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0, axis=1)
-        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0, axis=1)
+        df['KD'] = df.apply(lambda x: x['kills']/x['deaths'] if x['deaths']>0 else x['kills'], axis=1)
+        df['Win%'] = df.apply(lambda x: x['wins']/x['matches']*100 if x['matches']>0 else 0, axis=1)
         
-        df = df.sort_values(by='KD', ascending=False)
-        
-        st.dataframe(
-            df[['nickname', 'KD', 'WinRate', 'wins', 'matches', 'kills', 'HS%', 'utility_damage']],
-            hide_index=True,
-            column_config={
-                "nickname": "Jogador",
-                "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "WinRate": st.column_config.NumberColumn("Win %", format="%.0f%% 🏆"),
-                "utility_damage": st.column_config.NumberColumn("Dano Util.", format="%.0f 💣"),
-            },
-            use_container_width=True
-        )
+        st.dataframe(df[['nickname', 'KD', 'Win%', 'kills', 'deaths', 'matches']], hide_index=True)
     else:
         st.info("Ranking vazio.")
