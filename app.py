@@ -57,7 +57,7 @@ if arquivo:
     st.header("2. Rastreando o Ph (76561198301569089)")
     
     # Filtra eventos só do Ph
-    id_alvo = "76561198301569089"
+    id_alvo = ["76561198301569089","76561198051052379"]
     
     st.subheader("Eventos de Nascimento (Spawn)")
     if not df_spawn.empty:
