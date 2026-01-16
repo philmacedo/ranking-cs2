@@ -25,8 +25,9 @@ st.markdown("""
     .gold { border-color: #FFD700; box-shadow: 0 0 15px rgba(255, 215, 0, 0.3); }
     .silver { border-color: #C0C0C0; box-shadow: 0 0 10px rgba(192, 192, 192, 0.3); }
     .bronze { border-color: #CD7F32; box-shadow: 0 0 10px rgba(205, 127, 50, 0.3); }
-    .big-stat { font-size: 24px; font-weight: bold; margin: 10px 0; }
+    .rating-val { font-size: 36px; font-weight: bold; margin: 5px 0; color: #4CAF50; }
     .player-name { font-size: 20px; color: #FFF; margin-bottom: 5px; }
+    .stat-row { font-size: 14px; color: #AAA; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,9 +90,11 @@ def atualizar_banco(stats_novos):
             response = supabase.table('player_stats').select("*").eq('nickname', nick).execute()
             
             novos_dados = {
-                "kills": dados['Kills'], "deaths": dados['Deaths'], "matches": dados['Matches'],
-                "wins": dados['Wins'], "headshots": dados['Headshots'], 
-                "enemies_flashed": dados['EnemiesFlashed'], "utility_damage": dados['UtilityDamage']
+                "kills": dados['Kills'], "deaths": dados['Deaths'], "assists": dados['Assists'],
+                "matches": dados['Matches'], "wins": dados['Wins'], 
+                "headshots": dados['Headshots'], "enemies_flashed": dados['EnemiesFlashed'], 
+                "utility_damage": dados['UtilityDamage'], "total_damage": dados['TotalDamage'],
+                "rounds_played": dados['RoundsPlayed']
             }
             try:
                 if response.data:
@@ -105,12 +108,11 @@ def atualizar_banco(stats_novos):
                 st.error(f"Erro BD: {e}")
 
 def processar_demo(arquivo_upload):
-    # Retorna (Sucesso: bool, DataFrame_da_Partida: pd.DataFrame)
     arquivo_bytes = arquivo_upload.read()
     file_hash = calcular_hash(arquivo_bytes)
     
     if demo_ja_processada(file_hash):
-        st.error("⛔ Demo Duplicada! Esta partida já foi contabilizada no Ranking Global.")
+        st.error("⛔ Demo Duplicada!")
         return False, None
 
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".dem")
@@ -118,7 +120,9 @@ def processar_demo(arquivo_upload):
     caminho_temp = tfile.name
     tfile.close()
     
-    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Matches": 0, "Wins": 0, "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0} for nome in AMIGOS.keys()}
+    stats_partida = {nome: {"Kills": 0, "Deaths": 0, "Assists": 0, "Matches": 0, "Wins": 0, 
+                            "Headshots": 0, "EnemiesFlashed": 0, "UtilityDamage": 0, 
+                            "TotalDamage": 0, "RoundsPlayed": 0} for nome in AMIGOS.keys()}
     sucesso = False
     
     try:
@@ -131,13 +135,13 @@ def processar_demo(arquivo_upload):
         df_hurt = ler_evento(parser, "player_hurt")
         df_team = ler_evento(parser, "player_team")
 
-        # Colunas ID
+        # IDs
         col_atk_id = next((c for c in df_death.columns if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
         col_vic_id = next((c for c in df_death.columns if c in ['user_steamid', 'user_xuid', 'user_steamid64']), None)
+        col_ass_id = next((c for c in df_death.columns if c in ['assister_steamid', 'assister_xuid']), None)
         col_team_id = next((c for c in df_team.columns if c in ['user_steamid', 'steamid', 'userid_steamid']), None)
 
-        if not col_atk_id:
-            return False, None
+        if not col_atk_id: return False, None
 
         # Limpeza
         for df in [df_death, df_blind, df_hurt, df_team]:
@@ -165,8 +169,10 @@ def processar_demo(arquivo_upload):
             for _, row in df_round.iterrows():
                 w = normalizar_time(row['winner'])
                 if w: rounds_data.append({'tick': row['tick'], 'winner': w})
+        
+        total_rounds_match = len(rounds_data)
 
-        # Processamento
+        # PROCESSAMENTO
         for nome_exibicao, lista_ids in AMIGOS.items():
             lista_ids = [str(uid).strip() for uid in lista_ids]
             
@@ -174,29 +180,38 @@ def processar_demo(arquivo_upload):
             if not df_death.empty and col_atk_id:
                 my_kills = df_death[df_death[col_atk_id].isin(lista_ids)]
                 stats_partida[nome_exibicao]["Kills"] = len(my_kills)
+                
                 if 'headshot' in my_kills.columns:
                     stats_partida[nome_exibicao]["Headshots"] = len(my_kills[my_kills['headshot']==True])
                 if col_vic_id:
                     stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic_id].isin(lista_ids)])
+                if col_ass_id:
+                    stats_partida[nome_exibicao]["Assists"] = len(df_death[df_death[col_ass_id].isin(lista_ids)])
 
             # Flash
             if not df_blind.empty:
-                c_blind_id = next((c for c in df_blind.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
-                if c_blind_id:
-                    df_blind[c_blind_id] = df_blind[c_blind_id].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                    stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[c_blind_id].isin(lista_ids)])
+                c_blind = next((c for c in df_blind.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
+                if c_blind:
+                    df_blind[c_blind] = df_blind[c_blind].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                    stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[c_blind].isin(lista_ids)])
             
             # Dano
             if not df_hurt.empty:
-                c_hurt_id = next((c for c in df_hurt.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
-                if c_hurt_id and 'weapon' in df_hurt.columns and 'dmg_health' in df_hurt.columns:
-                    df_hurt[c_hurt_id] = df_hurt[c_hurt_id].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                    dmg = df_hurt[(df_hurt[c_hurt_id].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade', 'molotov']))]
-                    stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
+                c_hurt = next((c for c in df_hurt.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
+                if c_hurt and 'dmg_health' in df_hurt.columns:
+                    df_hurt[c_hurt] = df_hurt[c_hurt].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                    
+                    meu_dano = df_hurt[df_hurt[c_hurt].isin(lista_ids)]
+                    stats_partida[nome_exibicao]["TotalDamage"] = int(meu_dano['dmg_health'].sum())
+                    
+                    if 'weapon' in df_hurt.columns:
+                        dmg_util = meu_dano[meu_dano['weapon'].isin(['hegrenade', 'inferno', 'incgrenade', 'molotov'])]
+                        stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg_util['dmg_health'].sum())
 
             # Vitória
             meus_pontos = 0
-            total_rounds = 0
+            total_rounds_jogados = 0
+            
             minha_timeline = []
             for uid in lista_ids:
                 if uid in time_history:
@@ -220,10 +235,14 @@ def processar_demo(arquivo_upload):
                     meu_time = None
                     passado = [h for h in minha_timeline if h['tick'] <= r_tick]
                     if passado: meu_time = passado[-1]['team']
-                    if meu_time == r_winner: meus_pontos += 1
-                    total_rounds += 1
+                    if meu_time:
+                        total_rounds_jogados += 1
+                        if meu_time == r_winner: meus_pontos += 1
             
-            if total_rounds > 0 and meus_pontos > (total_rounds / 2):
+            if total_rounds_jogados == 0: total_rounds_jogados = total_rounds_match
+            stats_partida[nome_exibicao]["RoundsPlayed"] = total_rounds_jogados
+
+            if total_rounds_jogados > 0 and meus_pontos > (total_rounds_jogados / 2):
                 stats_partida[nome_exibicao]["Wins"] = 1
 
             if (stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0 or stats_partida[nome_exibicao]["UtilityDamage"] > 0):
@@ -234,15 +253,16 @@ def processar_demo(arquivo_upload):
             atualizar_banco(stats_partida)
             registrar_demo(file_hash)
             
-            # Cria DataFrame para exibir na página 1
             rows = []
             for k, v in stats_partida.items():
                 if v['Matches'] > 0:
                     rows.append({
                         "nickname": k,
-                        "kills": v['Kills'], "deaths": v['Deaths'], "wins": v['Wins'],
-                        "headshots": v['Headshots'], "enemies_flashed": v['EnemiesFlashed'],
-                        "utility_damage": v['UtilityDamage'], "matches": v['Matches']
+                        "kills": v['Kills'], "deaths": v['Deaths'], "assists": v['Assists'],
+                        "wins": v['Wins'], "headshots": v['Headshots'], 
+                        "enemies_flashed": v['EnemiesFlashed'], "utility_damage": v['UtilityDamage'],
+                        "total_damage": v['TotalDamage'], "rounds_played": v['RoundsPlayed'],
+                        "matches": v['Matches']
                     })
             return True, pd.DataFrame(rows)
         else:
@@ -255,58 +275,48 @@ def processar_demo(arquivo_upload):
         if os.path.exists(caminho_temp): os.remove(caminho_temp)
 
 # --- 3. NAVEGAÇÃO ---
-# Menu Lateral
 st.sidebar.title("Menu")
 pagina = st.sidebar.radio("Navegar", ["📤 Upload & Partida Atual", "🏆 Ranking Global"], label_visibility="collapsed")
 
-# --- PÁGINA 1: UPLOAD E DADOS DA PARTIDA ---
+# --- PÁGINA 1 ---
 if pagina == "📤 Upload & Partida Atual":
     st.title("📤 Upload de Demo")
-    st.write("Suba o arquivo `.dem` para processar a partida e ver os dados **deste jogo**.")
+    st.write("Suba o arquivo `.dem` para processar a partida.")
     
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
-    
-    if "df_partida_atual" not in st.session_state:
-        st.session_state["df_partida_atual"] = None
+    if "df_partida_atual" not in st.session_state: st.session_state["df_partida_atual"] = None
 
     if arquivo:
         if st.button("🚀 Processar Partida"):
-            with st.spinner("Analisando timeline e stats..."):
+            with st.spinner("Analisando..."):
                 sucesso, df_resultado = processar_demo(arquivo)
                 if sucesso:
-                    st.success("✅ Partida processada e adicionada ao Ranking Global!")
+                    st.success("✅ Partida processada!")
                     st.session_state["df_partida_atual"] = df_resultado
                     st.balloons()
     
-    # Exibe dados da partida atual (se houver)
     if st.session_state["df_partida_atual"] is not None:
         st.divider()
         st.subheader("📊 Relatório da Partida")
-        
         df = st.session_state["df_partida_atual"].copy()
         
-        # Cálculos específicos da partida
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0.0, axis=1)
-        df['Resultado'] = df['wins'].apply(lambda x: "🏆 Vitória" if x == 1 else "💀 Derrota")
-        
-        df = df.sort_values(by='KD', ascending=False)
+        df['ADR'] = df.apply(lambda x: x['total_damage'] / x['rounds_played'] if x['rounds_played'] > 0 else 0, axis=1)
+        df['Rating'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
+        df = df.sort_values(by='Rating', ascending=False)
         
         st.dataframe(
-            df[['nickname', 'Resultado', 'KD', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
+            df[['nickname', 'Rating', 'KD', 'ADR', 'kills', 'assists', 'deaths', 'enemies_flashed', 'utility_damage']],
             hide_index=True,
             column_config={
-                "nickname": "Jogador",
-                "KD": st.column_config.NumberColumn("K/D", format="%.2f"),
-                "HS%": st.column_config.NumberColumn("HS %", format="%.1f%%"),
-                "enemies_flashed": "Cegos 💡",
-                "utility_damage": "Dano Util 💣",
-                "kills": "K", "deaths": "D"
+                "nickname": "Jogador", "Rating": st.column_config.NumberColumn("RATING", format="%.2f ⭐"),
+                "KD": st.column_config.NumberColumn("K/D", format="%.2f"), "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
+                "kills": "K", "deaths": "D", "assists": "A", "enemies_flashed": "Cegos", "utility_damage": "Util Dmg"
             },
             use_container_width=True
         )
 
-# --- PÁGINA 2: RANKING GLOBAL (PÓDIO) ---
+# --- PÁGINA 2 ---
 elif pagina == "🏆 Ranking Global":
     st.title("🏆 Ranking Global")
     
@@ -316,80 +326,88 @@ elif pagina == "🏆 Ranking Global":
     
     if response.data:
         df = pd.DataFrame(response.data)
-        cols = ['kills', 'deaths', 'matches', 'wins', 'headshots', 'utility_damage', 'enemies_flashed']
-        for c in cols: 
+        for c in ['assists', 'total_damage', 'rounds_played']:
             if c not in df.columns: df[c] = 0
             
-        # Cálculos Globais
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['WinRatePct'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0.0, axis=1)
-        df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0.0, axis=1)
+        df['ADR'] = df.apply(lambda x: x['total_damage'] / x['rounds_played'] if x['rounds_played'] > 0 else 0, axis=1)
+        df['Rating'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
         
-        # Ordena por KD para o pódio (pode mudar para WinRate se preferir)
-        df_podium = df.sort_values(by='KD', ascending=False).reset_index(drop=True)
+        df_podium = df.sort_values(by='Rating', ascending=False).reset_index(drop=True)
         
-        # --- ANIMAÇÃO DO PÓDIO ---
         if len(df_podium) >= 3:
-            col1, col2, col3 = st.columns([1, 1.2, 1]) # O do meio é maior (1o lugar)
-            
-            # 2º Lugar (Prata) - Esquerda
+            col1, col2, col3 = st.columns([1, 1.2, 1])
             with col1:
                 p2 = df_podium.iloc[1]
                 st.markdown(f"""
                 <div class="podium-card silver">
                     <div style="font-size:40px;">🥈</div>
                     <div class="player-name">{p2['nickname']}</div>
-                    <div class="big-stat">{p2['KD']:.2f} KD</div>
-                    <div style="color:#aaa;">{int(p2['WinRatePct'])}% Win Rate</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            # 1º Lugar (Ouro) - Centro
+                    <div class="rating-val">{p2['Rating']:.2f}</div>
+                    <div class="stat-row">Rating Performance</div>
+                    <div style="color:#aaa;">{p2['KD']:.2f} KD • {int(p2['ADR'])} ADR</div>
+                </div>""", unsafe_allow_html=True)
             with col2:
                 p1 = df_podium.iloc[0]
                 st.markdown(f"""
                 <div class="podium-card gold">
                     <div style="font-size:60px;">👑</div>
-                    <div class="player-name" style="font-size:26px; color:#FFD700;">{p1['nickname']}</div>
-                    <div class="big-stat" style="font-size:32px;">{p1['KD']:.2f} KD</div>
-                    <div style="color:#FFD700;">{int(p1['WinRatePct'])}% Win Rate</div>
-                    <br>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button("🎉 Celebrar Líder"): st.balloons()
-
-            # 3º Lugar (Bronze) - Direita
+                    <div class="player-name" style="color:#FFD700;">{p1['nickname']}</div>
+                    <div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['Rating']:.2f}</div>
+                    <div class="stat-row" style="color:#FFD700;">Rating Performance</div>
+                    <div style="color:#DDD;">{p1['KD']:.2f} KD • {int(p1['ADR'])} ADR</div>
+                </div>""", unsafe_allow_html=True)
             with col3:
                 p3 = df_podium.iloc[2]
                 st.markdown(f"""
                 <div class="podium-card bronze">
                     <div style="font-size:40px;">🥉</div>
                     <div class="player-name">{p3['nickname']}</div>
-                    <div class="big-stat">{p3['KD']:.2f} KD</div>
-                    <div style="color:#cd7f32;">{int(p3['WinRatePct'])}% Win Rate</div>
-                </div>
-                """, unsafe_allow_html=True)
+                    <div class="rating-val">{p3['Rating']:.2f}</div>
+                    <div class="stat-row">Rating Performance</div>
+                    <div style="color:#cd7f32;">{p3['KD']:.2f} KD • {int(p3['ADR'])} ADR</div>
+                </div>""", unsafe_allow_html=True)
         
         st.divider()
-        
-        # --- TABELA GERAL ---
-        st.subheader("📋 Classificação Completa")
+        st.subheader("📋 Classificação (Ordenado por Rating)")
         st.dataframe(
-            df_podium[['nickname', 'KD', 'Retrospecto', 'WinRatePct', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
+            df_podium[['nickname', 'Rating', 'KD', 'ADR', 'Retrospecto', 'WinRatePct', 'kills', 'assists', 'deaths', 'enemies_flashed', 'utility_damage']],
             hide_index=True,
             column_config={
-                "nickname": "Jogador",
-                "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "Retrospecto": st.column_config.TextColumn("Vitórias / Jogos", help="Total de Vitórias"),
-                "WinRatePct": st.column_config.NumberColumn("Aprov.", format="%.0f%%"),
-                "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
-                "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
-                "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
-                "kills": "Kills",
-                "deaths": "Mortes"
+                "nickname": "Jogador", "Rating": st.column_config.NumberColumn("RATING", format="%.2f ⭐"),
+                "KD": st.column_config.NumberColumn("K/D", format="%.2f"), "ADR": st.column_config.NumberColumn("ADR", format="%.1f"),
+                "Retrospecto": "Vit/Jogos", "WinRatePct": st.column_config.NumberColumn("Win%", format="%.0f%%"),
+                "kills": "K", "deaths": "D", "assists": "A", "enemies_flashed": "Cegos", "utility_damage": "Util Dmg"
             },
             use_container_width=True
         )
+
+        # --- AQUI ESTÁ A EXPLICAÇÃO DO CÁLCULO ---
+        st.divider()
+        with st.expander("ℹ️ Entenda os Critérios do Ranking (Como é calculado?)"):
+            st.markdown(r"""
+            ### 🧠 O "Rating Performance" (A Nota Final)
+            Para definir o MVP de forma justa, não olhamos apenas para K/D. Criamos uma fórmula que valoriza o **trabalho em equipe**:
+
+            $$
+            \text{Rating} = \frac{\text{Kills} + (\text{Assists} \times 0.4) + (\text{Cegos} \times 0.2) + (\text{DanoUtil} \div 100)}{\text{Mortes}}
+            $$
+
+            **O que isso significa?**
+            * 🔫 **Kills:** Valem 1 ponto cheio.
+            * 🤝 **Assistências:** Valem 40% de uma kill (ajudar mata!).
+            * 💡 **Cegos (Flash):** Cegar um inimigo vale 20% de uma kill.
+            * 💣 **Dano de Utilitário:** Cada 100 de dano com granada/molotov vale 1 kill.
+            * 💀 **Mortes:** Quanto mais você morre, mais seu rating cai (é o divisor).
+
+            ---
+
+            ### 📊 Outras Siglas
+            * **ADR (Average Damage per Round):** Média de dano que você causa por rodada. É a métrica mais honesta para saber quem está "batendo" muito, mesmo que o amigo roube a kill no final.
+            * **K/D (Kill / Death):** A clássica divisão de quantas vezes matou por quantas morreu.
+            * **Win Rate:** Porcentagem de vitórias (Vitórias / Total de Partidas).
+            """)
     else:
-        st.info("O Ranking Global ainda está vazio. Suba a primeira demo!")
+        st.info("Ranking vazio.")
