@@ -65,7 +65,6 @@ def ler_evento(parser, nome_evento):
 
 def criar_grafico_winrate(nome, win_rate, total_matches):
     """Cria um gráfico de rosca (Donut Chart) verde para o Win Rate"""
-    # Cores: Verde se > 50%, Cinza caso contrário
     cor = "#2ecc71" if win_rate >= 50 else "#e74c3c"
     
     source = pd.DataFrame({
@@ -73,21 +72,16 @@ def criar_grafico_winrate(nome, win_rate, total_matches):
         "Value": [win_rate, 100-win_rate]
     })
     
-    base = alt.Chart(source).encode(
-        theta=alt.Theta("Value", stack=True)
-    )
-    
+    base = alt.Chart(source).encode(theta=alt.Theta("Value", stack=True))
     pie = base.mark_arc(outerRadius=50, innerRadius=35).encode(
         color=alt.Color("Category", scale=alt.Scale(domain=["Vitórias", "Resto"], range=[cor, "#2c3e50"]), legend=None),
         order=alt.Order("Category", sort="descending")
     )
-    
     text = base.mark_text(radius=0).encode(
         text=alt.value(f"{int(win_rate)}%"),
         color=alt.value("white"),
         size=alt.value(14)
     )
-    
     return (pie + text).properties(title=f"{nome} ({total_matches} partidas)")
 
 def atualizar_banco(stats_novos):
@@ -141,7 +135,7 @@ def processar_demo(arquivo_upload):
         df_hurt = ler_evento(parser, "player_hurt")
         df_team = ler_evento(parser, "player_team")
 
-        # 2. COLUNAS ID
+        # 2. COLUNAS ID (Específico para SteamID)
         col_atk_id = next((c for c in df_death.columns if c in ['attacker_steamid', 'attacker_xuid', 'attacker_steamid64']), None)
         col_vic_id = next((c for c in df_death.columns if c in ['user_steamid', 'user_xuid', 'user_steamid64']), None)
         col_team_id = next((c for c in df_team.columns if c in ['user_steamid', 'steamid', 'userid_steamid']), None)
@@ -150,16 +144,15 @@ def processar_demo(arquivo_upload):
             st.error("Erro: IDs não encontrados.")
             return False
 
-        # 3. LIMPEZA
+        # 3. LIMPEZA GERAL
         for df in [df_death, df_blind, df_hurt, df_team]:
             for col in df.columns:
                 if 'steamid' in col or 'xuid' in col:
                     df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-        # 4. TIMELINE DE TIMES (A Lógica que funcionou!)
+        # 4. TIMELINE DE TIMES (Lógica de Vitória)
         time_history = {}
         if not df_team.empty and col_team_id:
-            # Ordena e cria histórico
             df_team_sorted = df_team.sort_values('tick')
             for _, row in df_team_sorted.iterrows():
                 uid = row[col_team_id]
@@ -182,7 +175,7 @@ def processar_demo(arquivo_upload):
         for nome_exibicao, lista_ids in AMIGOS.items():
             lista_ids = [str(uid).strip() for uid in lista_ids]
             
-            # Combate
+            # --- COMBATE (Kills/Deaths) ---
             if not df_death.empty and col_atk_id:
                 my_kills = df_death[df_death[col_atk_id].isin(lista_ids)]
                 stats_partida[nome_exibicao]["Kills"] = len(my_kills)
@@ -191,29 +184,40 @@ def processar_demo(arquivo_upload):
                 if col_vic_id:
                     stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic_id].isin(lista_ids)])
 
-            # Flash/Dano
+            # --- CORREÇÃO: CEGOS (Flash) ---
             if not df_blind.empty:
-                c_atk = next((c for c in df_blind.columns if 'attacker' in c), None)
-                if c_atk: stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[c_atk].isin(lista_ids)])
+                # Procura explicitamente coluna de ID, não apenas 'attacker'
+                c_blind_id = next((c for c in df_blind.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
+                if c_blind_id:
+                    # Garante limpeza do ID nesta tabela específica também
+                    df_blind[c_blind_id] = df_blind[c_blind_id].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                    stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[c_blind_id].isin(lista_ids)])
             
+            # --- CORREÇÃO: DANO (Utility Damage) ---
             if not df_hurt.empty:
-                c_atk = next((c for c in df_hurt.columns if 'attacker' in c), None)
-                if c_atk and 'weapon' in df_hurt.columns:
-                    dmg = df_hurt[(df_hurt[c_atk].isin(lista_ids)) & (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade']))]
+                # Procura explicitamente coluna de ID
+                c_hurt_id = next((c for c in df_hurt.columns if c in ['attacker_steamid', 'attacker_xuid']), None)
+                
+                if c_hurt_id and 'weapon' in df_hurt.columns and 'dmg_health' in df_hurt.columns:
+                    # Garante limpeza do ID
+                    df_hurt[c_hurt_id] = df_hurt[c_hurt_id].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                    
+                    dmg = df_hurt[
+                        (df_hurt[c_hurt_id].isin(lista_ids)) & 
+                        (df_hurt['weapon'].isin(['hegrenade', 'inferno', 'incgrenade', 'molotov']))
+                    ]
                     stats_partida[nome_exibicao]["UtilityDamage"] = int(dmg['dmg_health'].sum())
 
-            # Vitória (Timeline)
+            # --- VITÓRIA (Timeline) ---
             meus_pontos = 0
             total_rounds = 0
             
-            # Pega timeline
             minha_timeline = []
             for uid in lista_ids:
                 if uid in time_history:
                     minha_timeline = time_history[uid]
                     break
             
-            # Fallback Timeline (Se não achou em player_team, usa kills)
             if not minha_timeline and not df_death.empty:
                 temp = []
                 c_t = next((c for c in df_death.columns if 'attacker_team' in c or 'team_num' in c), None)
@@ -239,7 +243,10 @@ def processar_demo(arquivo_upload):
             if total_rounds > 0 and meus_pontos > (total_rounds / 2):
                 stats_partida[nome_exibicao]["Wins"] = 1
 
-            if stats_partida[nome_exibicao]["Kills"] > 0 or stats_partida[nome_exibicao]["Deaths"] > 0:
+            # Participação (Se fez qualquer coisa, conta)
+            if (stats_partida[nome_exibicao]["Kills"] > 0 or 
+                stats_partida[nome_exibicao]["Deaths"] > 0 or
+                stats_partida[nome_exibicao]["UtilityDamage"] > 0):
                 stats_partida[nome_exibicao]["Matches"] = 1
                 sucesso = True
 
@@ -263,7 +270,7 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    arquivo = st.file_uploader("Adicione o Arquivo .dem", type=["dem"])
+    arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
     if arquivo and st.button("🚀 Processar"):
         with st.spinner("Analisando..."):
             if processar_demo(arquivo):
@@ -283,17 +290,15 @@ with tab2:
         # Cálculos
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['WinRatePct'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0.0, axis=1)
-        df['WinRateBar'] = df['WinRatePct'] / 100 # Para barra de progresso (0-1)
+        df['WinRateBar'] = df['WinRatePct'] / 100
         df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0.0, axis=1)
-        
-        # Coluna Formatada: "5 / 10"
         df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
         
         df = df.sort_values(by='KD', ascending=False)
         
-        # --- PARTE 1: GRÁFICOS DE CÍRCULO (TOP PLAYERS) ---
+        # --- PARTE 1: GRÁFICOS ---
         st.subheader("🌟 Destaques (Win Rate)")
-        top_players = df.head(4) # Pega os 4 melhores
+        top_players = df.head(4)
         cols = st.columns(4)
         for i, (index, row) in enumerate(top_players.iterrows()):
             with cols[i % 4]:
@@ -302,7 +307,7 @@ with tab2:
 
         st.divider()
 
-        # --- PARTE 2: TABELA DETALHADA ---
+        # --- PARTE 2: TABELA ---
         st.subheader("📋 Tabela Geral")
         st.dataframe(
             df[['nickname', 'KD', 'Retrospecto', 'WinRateBar', 'kills', 'deaths', 'HS%', 'enemies_flashed', 'utility_damage']],
@@ -310,7 +315,7 @@ with tab2:
             column_config={
                 "nickname": "Jogador",
                 "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
-                "Retrospecto": st.column_config.TextColumn("Vitórias / Jogos", help="Total de Vitórias sobre Total de Partidas"),
+                "Retrospecto": st.column_config.TextColumn("Vitórias / Jogos"),
                 "WinRateBar": st.column_config.ProgressColumn("Aproveitamento", format="%.0f%%", min_value=0, max_value=1),
                 "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
