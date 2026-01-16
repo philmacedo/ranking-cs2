@@ -23,13 +23,31 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
         transition: transform 0.2s;
     }
-    .podium-card:hover { transform: translateY(-5px); border-color: #e9a338; }
+    .podium-card:hover { transform: translateY(-5px); 
+            border-color: #e9a338; 
+            
+    }
     .gold { border-top: 4px solid #FFD700; }
     .silver { border-top: 4px solid #C0C0C0; }
     .bronze { border-top: 4px solid #CD7F32; }
-    .rating-val { font-family: 'Inter', sans-serif; font-size: 42px; font-weight: 800; margin: 10px 0; color: #e9a338; }
-    .player-name { font-size: 22px; font-weight: 600; color: #f1f1f1; margin-bottom: 5px; text-transform: uppercase; }
-    .stat-row { font-size: 14px; color: #8b9bb4; font-weight: 500; }
+    .rating-val { 
+            font-family: 'Inter', sans-serif; 
+            font-size: 42px; 
+            font-weight: 800; 
+            margin: 10px 0; 
+            color: #e9a338; 
+    }
+    .player-name { font-size: 22px; 
+            font-weight: 600; 
+            color: #f1f1f1; 
+            margin-bottom: 5px; 
+            text-transform: uppercase; 
+    }
+    .stat-row { font-size: 14px; 
+            color: #8b9bb4; 
+            font-weight: 500; 
+    }
+            
     h1, h2, h3 { color: #f1f1f1 !important; }
     p, span, li { color: #cfdae6; }
 </style>
