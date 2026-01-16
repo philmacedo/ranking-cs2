@@ -244,7 +244,7 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
+    arquivo = st.file_uploader("Adicione o  🗂️Arquivo .dem", type=["dem"])
     if arquivo and st.button("🚀 Processar Demo"):
         with st.spinner("Analisando com tecnologia LaihoE..."):
             if processar_demo(arquivo):
