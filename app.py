@@ -100,6 +100,11 @@ def processar_demo(arquivo_upload):
         df_hurt = pd.DataFrame(events_hurt)
         df_round = pd.DataFrame(events_round)
 
+        # --- ADICIONE ISTO AQUI PARA DEBUGAR ---
+        st.write("🔍 Debug - Colunas encontradas na Morte:", df_death.columns.tolist() if not df_death.empty else "Tabela Vazia")
+        st.write("🔍 Debug - Exemplo de dados:", df_death.head(2) if not df_death.empty else "Sem dados")
+        # ---------------------------------------
+
         # Conversão de IDs para Texto (Segurança Crítica)
         for df in [df_death, df_blind, df_hurt]:
             if not df.empty and 'attacker_steamid' in df.columns:
