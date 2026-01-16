@@ -290,7 +290,7 @@ with tab2:
         # Cálculos
         df['KD'] = df.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['WinRatePct'] = df.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0.0, axis=1)
-        df['WinRateBar'] = df['WinRatePct'] / 100
+        df['WinRateBar'] = df['WinRatePct'] * 100
         df['HS%'] = df.apply(lambda x: (x['headshots'] / x['kills'] * 100) if x['kills'] > 0 else 0.0, axis=1)
         df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
         
@@ -316,7 +316,7 @@ with tab2:
                 "nickname": "Jogador",
                 "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
                 "Retrospecto": st.column_config.TextColumn("Vitórias / Jogos"),
-                "WinRateBar": st.column_config.ProgressColumn("Aproveitamento", format="%.1f%%", min_value=0, max_value=100),
+                "WinRateBar": st.column_config.ProgressColumn("Aproveitamento", format="%.1f%%", min_value=0, max_value=1),
                 "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
                 "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
