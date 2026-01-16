@@ -18,16 +18,15 @@ except FileNotFoundError:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- LISTA DE AMIGOS (COM SMURFS) ---
-# Agora cada nome tem uma LISTA de IDs entre colchetes []
-# Você pode colocar quantos IDs quiser separados por vírgula.
+
 AMIGOS = {
     "Ph (Ph1L)": [
         "76561198301569089",  # Conta Principal
-        "76561198000000000"   # <--- COLOQUE AQUI O ID DA CONTA ZEZÉ
+        "76561198051052379"   # ZEZÉ
     ],
     "Pablo (Cyrax)": [
         "76561198143002755",  # Conta Principal
-        "76561199999999999"   # <--- COLOQUE AQUI O SEGUNDO ID DO PABLO
+        "76561198446160415"   # cyrax
     ],
     "Bruno (Safadinha)": ["76561198187604726"],
     "Daniel (Ocharadas)": ["76561199062357951"],
@@ -212,7 +211,7 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    st.write("Suba sua demo. Use a tabela azul para descobrir o ID dos smurfs.")
+    st.write("Suba sua demo. Use a tabela azul para descobrir o ID.")
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
     
     if arquivo is not None:
