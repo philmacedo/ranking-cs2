@@ -48,7 +48,7 @@ if arquivo:
         st.dataframe(df_team.head())
 
     # --- 2. RASTREAR O JOGADOR 'PH' ---
-    st.header("2. Rastreando o Ph (76561198301569089)")
+    st.header("2. Rastreando o Ph (76561198051052379)")
     
     # Filtra eventos só do Ph
     id_alvo = "76561198051052379"
