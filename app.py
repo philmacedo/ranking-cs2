@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from demoparser2 import DemoParser
 
 # --- 1. CONFIGURAÇÃO E ESTILOS (TEMA CS2) ---
-st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
+st.set_page_config(page_title=" Jogatina CS2 Ranking", page_icon="🔫", layout="wide")
 
 st.markdown("""
 <style>
