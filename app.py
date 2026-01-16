@@ -283,7 +283,7 @@ with tab2:
                     min_value=0, 
                     max_value=1
                 ),
-                "HS%": st.column_config.NumberColumn("HS %", format="%.0f%% 🎯"),
+                "HS%": st.column_config.NumberColumn("HS %", format="%.4f%% 🎯"),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
                 "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
                 "kills": "Kills",
