@@ -316,7 +316,7 @@ with tab2:
                 "nickname": "Jogador",
                 "KD": st.column_config.NumberColumn("K/D", format="%.2f ⭐"),
                 "Retrospecto": st.column_config.TextColumn("Vitórias / Jogos"),
-                "WinRateBar": st.column_config.ProgressColumn("Aproveitamento", format="%.0f%%", min_value=0, max_value=1),
+                "WinRateBar": st.column_config.ProgressColumn("Aproveitamento", format="%.1f%%", min_value=0, max_value=100),
                 "HS%": st.column_config.NumberColumn("HS %", format="%.1f%% 🎯"),
                 "enemies_flashed": st.column_config.NumberColumn("Cegos 💡"),
                 "utility_damage": st.column_config.NumberColumn("Dano Util 💣"),
