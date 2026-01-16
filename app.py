@@ -7,26 +7,64 @@ import altair as alt
 from supabase import create_client, Client
 from demoparser2 import DemoParser
 
-# --- 1. CONFIGURAÇÃO E ESTILOS ---
+# --- 1. CONFIGURAÇÃO E ESTILOS (TEMA CS2) ---
 st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 
+# Cores e Estilos inspirados na UI do Counter-Strike 2
 st.markdown("""
 <style>
+    /* Fundo geral da aplicação (ajuste fino para combinar com o tema dark do Streamlit) */
+    .stApp {
+        background-color: #0e1012;
+    }
+    
+    /* Estilo dos Cartões do Pódio */
     .podium-card {
-        background-color: #1E1E1E;
-        border-radius: 10px;
+        background-color: #1c222b; /* Cinza azulado CS2 */
+        border-radius: 8px;
         padding: 20px;
         text-align: center;
-        border: 2px solid #333;
-        transition: transform 0.3s;
+        border: 1px solid #2d3542;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s, box-shadow 0.2s;
     }
-    .podium-card:hover { transform: scale(1.05); }
-    .gold { border-color: #FFD700; box-shadow: 0 0 15px rgba(255, 215, 0, 0.3); }
-    .silver { border-color: #C0C0C0; box-shadow: 0 0 10px rgba(192, 192, 192, 0.3); }
-    .bronze { border-color: #CD7F32; box-shadow: 0 0 10px rgba(205, 127, 50, 0.3); }
-    .rating-val { font-size: 36px; font-weight: bold; margin: 5px 0; color: #4CAF50; }
-    .player-name { font-size: 20px; color: #FFF; margin-bottom: 5px; }
-    .stat-row { font-size: 14px; color: #AAA; }
+    .podium-card:hover { 
+        transform: translateY(-5px); 
+        box-shadow: 0 8px 15px rgba(233, 163, 56, 0.15); /* Brilho laranja suave */
+        border-color: #e9a338;
+    }
+    
+    /* Cores das Medalhas */
+    .gold { border-top: 4px solid #FFD700; }
+    .silver { border-top: 4px solid #C0C0C0; }
+    .bronze { border-top: 4px solid #CD7F32; }
+    
+    /* Tipografia */
+    .rating-val { 
+        font-family: 'Inter', sans-serif;
+        font-size: 42px; 
+        font-weight: 800; 
+        margin: 10px 0; 
+        color: #e9a338; /* Laranja CS2 */
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    .player-name { 
+        font-size: 22px; 
+        font-weight: 600;
+        color: #f1f1f1; 
+        margin-bottom: 5px; 
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .stat-row { 
+        font-size: 14px; 
+        color: #8b9bb4; /* Texto secundário azulado */
+        font-weight: 500;
+    }
+    
+    /* Ajustes globais de texto */
+    h1, h2, h3 { color: #f1f1f1 !important; }
+    p, span { color: #cfdae6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,6 +120,18 @@ def ler_evento(parser, nome_evento):
             return pd.DataFrame(dados[0][1])
         return pd.DataFrame(dados)
     except: return pd.DataFrame()
+
+def resetar_temporada():
+    """Apaga todos os dados do banco para iniciar nova season"""
+    try:
+        # Apaga stats dos jogadores (filtra onde matches >= 0 para pegar tudo)
+        supabase.table('player_stats').delete().gte('matches', 0).execute()
+        # Apaga histórico de demos processadas
+        supabase.table('processed_matches').delete().neq('match_hash', '0').execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao resetar: {e}")
+        return False
 
 def atualizar_banco(stats_novos):
     for i, (nick, dados) in enumerate(stats_novos.items()):
@@ -275,7 +325,7 @@ def processar_demo(arquivo_upload):
 st.sidebar.title("Navegação")
 pagina = st.sidebar.radio("Ir para:", ["📤 Upload & Partida Atual", "🏆 Ranking Global"], label_visibility="collapsed")
 
-# === PÁGINA 1 ===
+# === PÁGINA 1: UPLOAD ===
 if pagina == "📤 Upload & Partida Atual":
     st.title("📤 Upload de Demo")
     st.markdown("Suba o arquivo `.dem` para analisar a partida e enviá-la ao Ranking.")
@@ -315,7 +365,7 @@ if pagina == "📤 Upload & Partida Atual":
             use_container_width=True
         )
 
-# === PÁGINA 2 ===
+# === PÁGINA 2: RANKING GLOBAL ===
 elif pagina == "🏆 Ranking Global":
     st.title("🏆 Ranking Global")
     
@@ -347,16 +397,14 @@ elif pagina == "🏆 Ranking Global":
     df['ADR'] = df.apply(lambda x: x['total_damage'] / x['rounds_played'] if x['rounds_played'] > 0 else 0, axis=1)
     df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
     
-    # Rating Raw
+    # Rating
     df['RatingRaw'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-    
-    # Rating Final (AQUI ESTÁ A MUDANÇA)
     META_PARTIDAS = 50 
     df['Consistency'] = df['matches'].apply(lambda x: x / META_PARTIDAS if x < META_PARTIDAS else 1.0)
     df['RatingFinal'] = df['RatingRaw'] * df['Consistency']
 
     # Filtros
-    with st.expander("🔍 Filtros", expanded=False):
+    with st.expander("🔍 Filtros de Visualização", expanded=False):
         sel_players = st.multiselect("Filtrar Jogadores", options=df['nickname'].unique())
         min_matches = st.slider("Mínimo de Partidas", 0, 50, 0)
     
@@ -364,12 +412,11 @@ elif pagina == "🏆 Ranking Global":
     if sel_players:
         df_display = df_display[df_display['nickname'].isin(sel_players)]
 
-    # Ordenação e Pódio
+    # Pódio
     df_podium = df_display.sort_values(by='RatingFinal', ascending=False).reset_index(drop=True)
     
     if len(df_podium) >= 3 and df_podium.iloc[0]['RatingFinal'] > 0:
         col1, col2, col3 = st.columns([1, 1.2, 1])
-        
         with col1: # Prata
             p2 = df_podium.iloc[1]
             st.markdown(f"""
@@ -378,20 +425,18 @@ elif pagina == "🏆 Ranking Global":
                 <div class="player-name">{p2['nickname']}</div>
                 <div class="rating-val">{p2['RatingFinal']:.2f}</div>
                 <div class="stat-row">Rating Ajustado</div>
-                <div style="color:#aaa;">{int(p2['matches'])} partidas</div>
+                <div style="color:#8b9bb4;">{int(p2['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
-            
         with col2: # Ouro
             p1 = df_podium.iloc[0]
             st.markdown(f"""
             <div class="podium-card gold">
                 <div style="font-size:60px;">👑</div>
                 <div class="player-name" style="color:#FFD700;">{p1['nickname']}</div>
-                <div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['RatingFinal']:.2f}</div>
-                <div class="stat-row" style="color:#FFD700;">Rating Ajustado</div>
-                <div style="color:#DDD;">{int(p1['matches'])} partidas</div>
+                <div class="rating-val">{p1['RatingFinal']:.2f}</div>
+                <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
+                <div style="color:#8b9bb4;">{int(p1['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
-
         with col3: # Bronze
             p3 = df_podium.iloc[2]
             st.markdown(f"""
@@ -400,7 +445,7 @@ elif pagina == "🏆 Ranking Global":
                 <div class="player-name">{p3['nickname']}</div>
                 <div class="rating-val">{p3['RatingFinal']:.2f}</div>
                 <div class="stat-row">Rating Ajustado</div>
-                <div style="color:#cd7f32;">{int(p3['matches'])} partidas</div>
+                <div style="color:#8b9bb4;">{int(p3['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
     
     st.divider()
@@ -427,31 +472,28 @@ elif pagina == "🏆 Ranking Global":
     with st.expander("ℹ️ Entenda a Matemática do Ranking (Como funciona?)"):
         st.markdown(r"""
         ### 1. 🧠 O "Rating Performance" (Sua Nota de Habilidade)
-        Primeiro, calculamos sua performance bruta baseada no quanto você ajuda o time.
         
         $$
         \text{Rating} = \frac{\text{Kills} + (\text{Assists} \times 0.4) + (\text{Cegos} \times 0.2) + (\text{DanoUtil} \div 100)}{\text{Mortes}}
         $$
         
-        *Isso gera sua nota base. Se você mata muito e morre pouco, essa nota sobe.*
-
         ---
 
         ### 2. ⚖️ O Fator de Consistência (A Regra dos 50 Jogos)
-        Para evitar que alguém jogue **uma única partida**, dê sorte e fique em 1º lugar para sempre, aplicamos uma calibração:
-
         $$
         \text{Rating Oficial} = \text{Rating Base} \times \min\left(1, \frac{\text{Jogos}}{50}\right)
         $$
 
         **O que isso significa na prática?**
-        
         | Partidas Jogadas | Peso da Nota | Situação |
         | :--- | :--- | :--- |
         | 🐣 **10 Jogos** | 20% | Nota muito reduzida (Iniciante) |
         | 🐥 **25 Jogos** | 50% | Nota parcial (Ganhando experiência) |
         | 🦅 **50 Jogos** | **100%** | **Nota Real (Lenda do Ranking)** |
-        | 🐉 **100 Jogos** | **100%** | **Nota Real** (Não aumenta mais que 100%) |
-
-        > **Resumo:** Você precisa jogar pelo menos **50 partidas** para que seu Rating seja levado a sério (100% do valor).
         """)
+
+    # --- ÁREA ADMINISTRATIVA (NOVA) ---
+    st.divider()
+    with st.expander("⚠️ Área Administrativa (Reiniciar Temporada)"):
+        st.markdown("Use esta área apenas para **apagar todos os dados** e começar um novo campeonato.")
+        senha_admin
