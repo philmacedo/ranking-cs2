@@ -20,14 +20,20 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # --- LISTA DE AMIGOS ---
 # (Verifique se esses números batem com a tabela de diagnóstico que vai aparecer)
 AMIGOS = {
-    "Ph (Ph1L)": "76561198301569089", 
-    "Pablo (Cyrax)": "76561198143002755",
-    "Bruno (Safadinha)": "76561198187604726",
-    "Daniel (Ocharadas)": "76561199062357951",
-    "LEO (Trewan)": "76561198160033077",
-    "FERNANDO (Nandin)": "76561198185508959",
-    "DG (dgtremsz)":"76561199402154960",
-    "Arlon (M4CH)": "76561197978110112",
+    "Ph (Ph1L)": [
+        "76561198301569089",  # Conta Principal
+        "76561198051052379"   # ZEZÉ
+    ],
+    "Pablo (Cyrax)": [
+        "76561198143002755",  # Conta Principal
+        "76561198446160415"   # cyrax
+    ],
+    "Bruno (Safadinha)": ["76561198187604726"],
+    "Daniel (Ocharadas)": ["76561199062357951"],
+    "LEO (Trewan)": ["76561198160033077"],
+    "FERNANDO (Nandin)": ["76561198185508959"],
+    "DG (dgtremsz)": ["76561199402154960"],
+    "Arlon (M4CH)": ["76561197978110112"],
 }
 
 # --- 2. FUNÇÕES AUXILIARES ---
