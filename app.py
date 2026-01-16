@@ -13,11 +13,11 @@ st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 st.markdown("""
 <style>
     /* Fundo geral ajustado */
-    .stApp { background-color: #0e1012; }
+    .stApp { background-color: #1E4554; }
     
     /* Cartões do Pódio */
     .podium-card {
-        background-color: #1E4554;
+        background-color: #1c222b;
         border-radius: 8px;
         padding: 20px;
         text-align: center;
