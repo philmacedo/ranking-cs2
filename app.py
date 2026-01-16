@@ -10,17 +10,14 @@ from demoparser2 import DemoParser
 # --- 1. CONFIGURAÇÃO E ESTILOS (TEMA CS2) ---
 st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 
-# Cores e Estilos inspirados na UI do Counter-Strike 2
 st.markdown("""
 <style>
-    /* Fundo geral da aplicação (ajuste fino para combinar com o tema dark do Streamlit) */
-    .stApp {
-        background-color: #0e1012;
-    }
+    /* Fundo geral ajustado */
+    .stApp { background-color: #0e1012; }
     
-    /* Estilo dos Cartões do Pódio */
+    /* Cartões do Pódio */
     .podium-card {
-        background-color: #1c222b; /* Cinza azulado CS2 */
+        background-color: #1c222b;
         border-radius: 8px;
         padding: 20px;
         text-align: center;
@@ -30,11 +27,11 @@ st.markdown("""
     }
     .podium-card:hover { 
         transform: translateY(-5px); 
-        box-shadow: 0 8px 15px rgba(233, 163, 56, 0.15); /* Brilho laranja suave */
+        box-shadow: 0 8px 15px rgba(233, 163, 56, 0.15);
         border-color: #e9a338;
     }
     
-    /* Cores das Medalhas */
+    /* Medalhas */
     .gold { border-top: 4px solid #FFD700; }
     .silver { border-top: 4px solid #C0C0C0; }
     .bronze { border-top: 4px solid #CD7F32; }
@@ -45,7 +42,7 @@ st.markdown("""
         font-size: 42px; 
         font-weight: 800; 
         margin: 10px 0; 
-        color: #e9a338; /* Laranja CS2 */
+        color: #e9a338;
         text-shadow: 0 2px 4px rgba(0,0,0,0.5);
     }
     .player-name { 
@@ -58,11 +55,11 @@ st.markdown("""
     }
     .stat-row { 
         font-size: 14px; 
-        color: #8b9bb4; /* Texto secundário azulado */
+        color: #8b9bb4;
         font-weight: 500;
     }
     
-    /* Ajustes globais de texto */
+    /* Ajustes globais */
     h1, h2, h3 { color: #f1f1f1 !important; }
     p, span { color: #cfdae6; }
 </style>
@@ -371,7 +368,7 @@ elif pagina == "🏆 Ranking Global":
     
     col_top1, col_top2 = st.columns([3, 1])
     with col_top1:
-        st.info("ℹ️ **Fator de Consistência:** Jogadores com menos de **50 partidas** sofrem penalidade no Rating para provar regularidade.")
+        st.info("ℹ️ **Fator de Consistência:** Jogadores com menos de **50 partidas** sofrem penalidade no Rating.")
     with col_top2:
         if st.button("🔄 Atualizar Dados"): st.rerun()
     
@@ -397,8 +394,10 @@ elif pagina == "🏆 Ranking Global":
     df['ADR'] = df.apply(lambda x: x['total_damage'] / x['rounds_played'] if x['rounds_played'] > 0 else 0, axis=1)
     df['Retrospecto'] = df.apply(lambda x: f"{int(x['wins'])} / {int(x['matches'])}", axis=1)
     
-    # Rating
+    # Rating Raw
     df['RatingRaw'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
+    
+    # Rating Final (AQUI ESTÁ A MUDANÇA)
     META_PARTIDAS = 50 
     df['Consistency'] = df['matches'].apply(lambda x: x / META_PARTIDAS if x < META_PARTIDAS else 1.0)
     df['RatingFinal'] = df['RatingRaw'] * df['Consistency']
@@ -412,11 +411,12 @@ elif pagina == "🏆 Ranking Global":
     if sel_players:
         df_display = df_display[df_display['nickname'].isin(sel_players)]
 
-    # Pódio
+    # Ordenação e Pódio
     df_podium = df_display.sort_values(by='RatingFinal', ascending=False).reset_index(drop=True)
     
     if len(df_podium) >= 3 and df_podium.iloc[0]['RatingFinal'] > 0:
         col1, col2, col3 = st.columns([1, 1.2, 1])
+        
         with col1: # Prata
             p2 = df_podium.iloc[1]
             st.markdown(f"""
@@ -433,7 +433,7 @@ elif pagina == "🏆 Ranking Global":
             <div class="podium-card gold">
                 <div style="font-size:60px;">👑</div>
                 <div class="player-name" style="color:#FFD700;">{p1['nickname']}</div>
-                <div class="rating-val">{p1['RatingFinal']:.2f}</div>
+                <div class="rating-val" style="color:#FFD700; font-size:48px;">{p1['RatingFinal']:.2f}</div>
                 <div class="stat-row" style="color:#e9a338;">Rating Ajustado</div>
                 <div style="color:#8b9bb4;">{int(p1['matches'])} partidas</div>
             </div>""", unsafe_allow_html=True)
@@ -492,8 +492,16 @@ elif pagina == "🏆 Ranking Global":
         | 🦅 **50 Jogos** | **100%** | **Nota Real (Lenda do Ranking)** |
         """)
 
-    # --- ÁREA ADMINISTRATIVA (NOVA) ---
+    # --- ÁREA ADMINISTRATIVA ---
     st.divider()
     with st.expander("⚠️ Área Administrativa (Reiniciar Temporada)"):
         st.markdown("Use esta área apenas para **apagar todos os dados** e começar um novo campeonato.")
-        senha_admin
+        senha_admin = st.text_input("Senha de Administrador", type="password")
+        
+        if st.button("🗑️ DESTRUIR DADOS E REINICIAR TEMPORADA", type="primary"):
+            if senha_admin == "admin123":
+                if resetar_temporada():
+                    st.success("Temporada reiniciada com sucesso! Todos os dados foram apagados.")
+                    st.rerun()
+            else:
+                st.error("Senha incorreta.")
