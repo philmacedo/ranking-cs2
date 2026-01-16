@@ -17,16 +17,17 @@ except FileNotFoundError:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- LISTA DE AMIGOS ---
-# (Verifique se esses números batem com a tabela de diagnóstico que vai aparecer)
+# --- LISTA DE AMIGOS (COM SMURFS) ---
+# Agora cada nome tem uma LISTA de IDs entre colchetes []
+# Você pode colocar quantos IDs quiser separados por vírgula.
 AMIGOS = {
     "Ph (Ph1L)": [
         "76561198301569089",  # Conta Principal
-        "76561198051052379"   # ZEZÉ
+        "76561198000000000"   # <--- COLOQUE AQUI O ID DA CONTA ZEZÉ
     ],
     "Pablo (Cyrax)": [
         "76561198143002755",  # Conta Principal
-        "76561198446160415"   # cyrax
+        "76561199999999999"   # <--- COLOQUE AQUI O SEGUNDO ID DO PABLO
     ],
     "Bruno (Safadinha)": ["76561198187604726"],
     "Daniel (Ocharadas)": ["76561199062357951"],
@@ -117,25 +118,20 @@ def processar_demo(arquivo_upload):
             col_atk = next((c for c in cols if c in possiveis_atk), None)
             col_vic = next((c for c in cols if c in possiveis_vic), None)
             
-            # --- RAIO-X DE IDS (AQUI ESTÁ A MÁGICA) ---
+            # --- RAIO-X DE IDS ---
             if col_atk:
-                # Cria uma tabela única de Jogador + ID encontrados na demo
-                # Garantimos que seja string para mostrar igual ao dicionário
                 jogadores_demo = df_death[['attacker_name', col_atk]].dropna().drop_duplicates()
                 jogadores_demo[col_atk] = jogadores_demo[col_atk].astype(str)
-                
-                st.info("🕵️ **Raio-X: Quem o sistema encontrou na demo:**")
+                st.info("🕵️ **Raio-X: IDs encontrados na demo:**")
                 st.dataframe(jogadores_demo, hide_index=True)
-                st.caption("Compare os IDs acima com os da sua lista 'AMIGOS'. Se forem diferentes, copie o daqui e corrija no código.")
             
             if not col_atk:
                 st.warning(f"⚠️ IDs não encontrados. Colunas: {cols}")
                 return False
 
-        # Converte IDs para texto nos DataFrames
+        # Converte IDs para texto limpo
         for df in [df_death, df_blind, df_hurt]:
             if not df.empty and col_atk in df.columns: 
-                # Remove .0 se vier como float (ex: "7656... .0")
                 df[col_atk] = df[col_atk].astype(str).str.replace(r'\.0$', '', regex=True)
             if not df.empty and col_vic in df.columns: 
                 df[col_vic] = df[col_vic].astype(str).str.replace(r'\.0$', '', regex=True)
@@ -149,33 +145,33 @@ def processar_demo(arquivo_upload):
                 winning_team_num = 2 if rounds_t > rounds_ct else 3
             except: pass
 
-        # 3. Processamento
-        for nome_exibicao, steam_id in AMIGOS.items():
+        # 3. Processamento (AGORA SUPORTA MÚLTIPLOS IDS)
+        for nome_exibicao, lista_ids in AMIGOS.items():
             
-            # Garante que o ID do amigo também é string limpa
-            steam_id = str(steam_id).strip()
+            # Garante que todos os IDs da lista sejam string limpa
+            lista_ids = [str(uid).strip() for uid in lista_ids]
 
             if not df_death.empty and col_atk in df_death.columns:
-                # Kills
-                meus_kills = df_death[df_death[col_atk] == steam_id]
+                # Kills: Verifica se o atacante está na LISTA de IDs desse jogador
+                meus_kills = df_death[df_death[col_atk].isin(lista_ids)]
                 stats_partida[nome_exibicao]["Kills"] = len(meus_kills)
                 
                 if 'headshot' in meus_kills.columns:
                     stats_partida[nome_exibicao]["Headshots"] = len(meus_kills[meus_kills['headshot'] == True])
                 
-                # Deaths
+                # Deaths: Verifica se a vítima está na LISTA de IDs
                 if col_vic in df_death.columns:
-                    stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic] == steam_id])
+                    stats_partida[nome_exibicao]["Deaths"] = len(df_death[df_death[col_vic].isin(lista_ids)])
 
             # Flashs
             if not df_blind.empty and col_atk in df_blind.columns:
-                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_atk] == steam_id])
+                stats_partida[nome_exibicao]["EnemiesFlashed"] = len(df_blind[df_blind[col_atk].isin(lista_ids)])
 
             # Dano
             if not df_hurt.empty and col_atk in df_hurt.columns and 'weapon' in df_hurt.columns and 'dmg_health' in df_hurt.columns:
                 granadas = ['hegrenade', 'inferno', 'incgrenade']
                 meu_dano = df_hurt[
-                    (df_hurt[col_atk] == steam_id) & 
+                    (df_hurt[col_atk].isin(lista_ids)) & 
                     (df_hurt['weapon'].isin(granadas))
                 ]
                 stats_partida[nome_exibicao]["UtilityDamage"] = int(meu_dano['dmg_health'].sum())
@@ -183,12 +179,14 @@ def processar_demo(arquivo_upload):
             # Vitória
             if winning_team_num and not df_death.empty:
                 player_team = None
+                # Procura qualquer ID da lista atacando
                 if col_atk in df_death.columns and 'attacker_team_num' in df_death.columns:
-                    last = df_death[df_death[col_atk] == steam_id]
+                    last = df_death[df_death[col_atk].isin(lista_ids)]
                     if not last.empty: player_team = last.iloc[-1]['attacker_team_num']
                 
+                # Procura qualquer ID da lista morrendo
                 if not player_team and col_vic in df_death.columns and 'user_team_num' in df_death.columns:
-                    last = df_death[df_death[col_vic] == steam_id]
+                    last = df_death[df_death[col_vic].isin(lista_ids)]
                     if not last.empty: player_team = last.iloc[-1]['user_team_num']
                 
                 if player_team == winning_team_num:
@@ -214,7 +212,7 @@ st.title("🔥 CS2 Pro Ranking")
 tab1, tab2 = st.tabs(["📤 Upload", "🏆 Ranking"])
 
 with tab1:
-    st.write("Suba sua demo. Uma tabela aparecerá mostrando os IDs encontrados.")
+    st.write("Suba sua demo. Use a tabela azul para descobrir o ID dos smurfs.")
     arquivo = st.file_uploader("Arquivo .dem", type=["dem"])
     
     if arquivo is not None:
@@ -224,7 +222,7 @@ with tab1:
                     st.success("Sucesso! Estatísticas computadas.")
                     st.balloons()
                 else:
-                    st.warning("Nenhum amigo encontrado. Verifique a tabela de IDs acima!")
+                    st.warning("Nenhum amigo encontrado. Verifique a lista de IDs.")
 
 with tab2:
     if st.button("🔄 Atualizar Tabela"):
