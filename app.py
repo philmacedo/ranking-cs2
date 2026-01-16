@@ -8,14 +8,8 @@ st.set_page_config(page_title="CS2 Raio-X", page_icon="🩻", layout="wide")
 
 # Lista simplificada para focar no erro
 AMIGOS_DEBUG = {
-    "Ph (Ph1L)": ["76561198301569089", "76561198051052379"],
-    "Pablo (Cyrax)": ["76561198143002755", "76561198446160415"],
-    "Bruno (Safadinha)": ["76561198187604726"],
-    "Daniel (Ocharadas)": ["76561199062357951"],
-    "LEO (Trewan)": ["76561198160033077"],
-    "FERNANDO (Nandin)": ["76561198185508959"],
-    "DG (dgtremsz)": ["76561199402154960"],
-    "Arlon (M4CH)": ["76561197978110112"],
+    "Ph (Ph1L)": "76561198051052379",
+    "Pablo (Cyrax)": "76561198446160415",
 }
 
 def ler_evento(parser, evento):
@@ -57,7 +51,7 @@ if arquivo:
     st.header("2. Rastreando o Ph (76561198301569089)")
     
     # Filtra eventos só do Ph
-    id_alvo = ["76561198301569089","76561198051052379"]
+    id_alvo = "76561198051052379"
     
     st.subheader("Eventos de Nascimento (Spawn)")
     if not df_spawn.empty:
