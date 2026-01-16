@@ -17,7 +17,7 @@ st.markdown("""
     
     /* Cartões do Pódio */
     .podium-card {
-        background-color: #1c222b;
+        background-color: #1E4554;
         border-radius: 8px;
         padding: 20px;
         text-align: center;
