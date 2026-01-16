@@ -398,13 +398,14 @@ elif pagina == "🏆 Ranking Global":
                     st.rerun()
             else: st.error("Senha incorreta ou nome da temporada vazio.")
 
-elif pagina == "🗺️ Mapas & Radar":
+
+elif pagina == "🗺️ Mapas & Radars":
     st.title("🗺️ Mapas & Radar")
-    st.markdown("Analise os pontos fortes e fracos do time em cada terreno.")
+    st.markdown("Analise o desempenho e veja quais mapas precisam ser treinados.")
     
     if st.button("🔄 Carregar Mapas"): st.rerun()
 
-    # Busca dados da tabela
+    # Busca dados
     try:
         resp_maps = supabase.table('player_map_stats').select("*").execute()
     except:
@@ -414,48 +415,56 @@ elif pagina == "🗺️ Mapas & Radar":
     if resp_maps and resp_maps.data:
         df_maps = pd.DataFrame(resp_maps.data)
         
-        # Lista Oficial de Mapas
+        # 1. Lista Obrigatória de Mapas (Para aparecerem mesmo zerados)
         MAPAS_OFICIAIS = ['Inferno','Overpass',  'Ancient', 'Nuke', 'Dust2','Anubis', 'Mirage']
         
         jogadores = sorted(df_maps['nickname'].unique())
         jogador_selecionado = st.selectbox("Selecione a Visão:", ["Todos (Média Geral)"] + jogadores)
         
-        # --- LÓGICA CORRIGIDA AQUI ---
+        # 2. Lógica de Agrupamento
         if jogador_selecionado != "Todos (Média Geral)":
-            # Visão Individual: Pega direto do banco
+            # Visão Individual
             df_filtered = df_maps[df_maps['nickname'] == jogador_selecionado].copy()
-            df_filtered['WinRate'] = (df_filtered['wins'] / df_filtered['matches']) * 100
             titulo_grafico = f"Performance de {jogador_selecionado}"
         else:
-            # Visão de Grupo (CORREÇÃO DA SOMA)
-            # 1. Agrupa por mapa
+            # Visão de Grupo (Lógica Inteligente)
+            # Agrupa por mapa
             df_grp = df_maps.groupby('map_name')
             
-            # 2. Para WinRate: Usamos a soma total (Média ponderada real de todos os tiros)
-            df_sums = df_grp.agg({'matches': 'sum', 'wins': 'sum'})
-            df_sums['WinRate'] = (df_sums['wins'] / df_sums['matches']) * 100
+            # Para "Partidas": Pegamos o MÁXIMO de partidas que alguém jogou naquele mapa.
+            # (Ex: Se Ph jogou 1 (Lost) e Cyrax jogou 1 (Lost), o grupo jogou 1 partida, e não 2).
+            # Isso garante que a derrota conte apenas 1 vez para o grupo.
+            df_matches = df_grp['matches'].max()
             
-            # 3. Para EXIBIÇÃO de Quantidade (O que você pediu):
-            # Isso assume que pelo menos um membro "core" jogou todas.
-            df_counts = df_grp.agg({'matches': 'max'})
+            # Para calcular a % de WinRate real, usamos a média das vitórias
+            df_wins_sum = df_grp['wins'].sum()
+            df_matches_sum = df_grp['matches'].sum()
+            win_ratio = (df_wins_sum / df_matches_sum).fillna(0)
             
-            # 4. Combina os dados: Traz o WinRate real para a contagem ajustada
-            df_filtered = df_counts.join(df_sums[['WinRate']])
-            
-            # 5. Recalcula vitórias para exibição (Partidas Ajustadas * WinRate)
-            df_filtered['wins'] = (df_filtered['matches'] * (df_filtered['WinRate'] / 100)).astype(int)
-            df_filtered = df_filtered.reset_index()
+            # Recria o DataFrame do Grupo
+            df_filtered = pd.DataFrame({
+                'matches': df_matches,
+                'wins': (df_matches * win_ratio).astype(int) # Proporcional
+            }).reset_index()
             
             titulo_grafico = "Performance Geral do Grupo"
 
-        # Garante que todos os mapas existam (com 0 se não jogados)
+        # 3. Cruzamento com a Lista Oficial (O Pulo do Gato)
+        # Cria um DF com todos os mapas vazios
         df_completo = pd.DataFrame({'map_name': MAPAS_OFICIAIS})
+        # Junta com os dados reais (quem não jogou fica com 0)
         df_final = pd.merge(df_completo, df_filtered, on='map_name', how='left').fillna(0)
+        
+        # 4. Cálculos Finais
+        # Win Rate
+        df_final['WinRate'] = df_final.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0, axis=1)
+        # Derrotas (Apenas para visualização se quiser)
+        df_final['losses'] = df_final['matches'] - df_final['wins']
         
         # --- VISUALIZAÇÃO ---
         col_radar, col_barras = st.columns([1, 1])
 
-        # 1. GRÁFICO DE RADAR
+        # A. GRÁFICO DE RADAR
         with col_radar:
             categories = df_final['map_name'].tolist()
             values = df_final['WinRate'].tolist()
@@ -469,51 +478,54 @@ elif pagina == "🗺️ Mapas & Radar":
                 r=values_radar, theta=categories_radar, fill='toself', name='Win Rate %',
                 line=dict(color='#e9a338', width=3),
                 fillcolor='rgba(233, 163, 56, 0.3)',
-                hovertext=[f"Mapa: {c}<br>Jogos: {int(m)}<br>WinRate: {v:.1f}%" for c, m, v in zip(categories, matches, values)] + [""]
+                hovertext=[f"<b>{c}</b><br>Jogos: {int(m)}<br>Vitórias: {int(v/100*m)}<br>Derrotas: {int(m - (v/100*m))}" for c, m, v in zip(categories, matches, values)] + [""]
             ))
             fig_radar.update_layout(
                 polar=dict(radialaxis=dict(visible=True, range=[0, 100], color="#8b9bb4", showticklabels=False), bgcolor="#1c222b"),
                 paper_bgcolor="#0e1012", font=dict(color="#f1f1f1"), margin=dict(l=40, r=40, t=20, b=20), showlegend=False, height=400
             )
-            st.markdown(f"### 🕸️ Radar")
+            st.markdown(f"### 🕸️ Radar de Win Rate")
             st.plotly_chart(fig_radar, use_container_width=True)
 
-        # 2. GRÁFICO DE BARRAS VERTICAIS
+        # B. GRÁFICO DE BARRAS VERTICAIS
         with col_barras:
+            # Ordena por WinRate para o gráfico
             df_barras = df_final.sort_values(by=['WinRate', 'matches'], ascending=False)
             
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(
-                x=df_barras['map_name'], y=df_barras['WinRate'],
+                x=df_barras['map_name'], 
+                y=df_barras['WinRate'],
                 marker=dict(color=df_barras['WinRate'], colorscale='RdYlGn', cmin=0, cmax=100, showscale=False),
-                text=[f"{v:.0f}%" if m > 0 else "" for v, m in zip(df_barras['WinRate'], df_barras['matches'])],
+                text=[f"{int(m)} Jgs" if m > 0 else "" for m in df_barras['matches']], # Mostra total de jogos em cima da barra
                 textposition='outside',
-                hovertemplate='<b>%{x}</b><br>Win Rate: %{y:.1f}%<br>Partidas: %{customdata}<extra></extra>',
+                hovertemplate='<b>%{x}</b><br>Win Rate: %{y:.1f}%<br>Total Partidas: %{customdata}<extra></extra>',
                 customdata=df_barras['matches']
             ))
             fig_bar.update_layout(
                 xaxis=dict(title="Mapas", color="#f1f1f1", gridcolor="#2d3542"),
-                yaxis=dict(title="Taxa de Vitória (%)", range=[0, 110], color="#f1f1f1", gridcolor="#2d3542"),
+                yaxis=dict(title="Taxa de Vitória (%)", range=[0, 115], color="#f1f1f1", gridcolor="#2d3542"),
                 paper_bgcolor="#0e1012", plot_bgcolor="#0e1012", font=dict(color="#f1f1f1"),
                 margin=dict(l=10, r=10, t=20, b=20), height=400
             )
-            st.markdown("### 📊 Ranking de Eficiência")
+            st.markdown("### 📊 Eficiência vs Quantidade")
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        # 3. TABELA DETALHADA
+        # C. TABELA COMPLETA (TODOS OS MAPAS)
         st.divider()
-        st.subheader("📋 Detalhes por Mapa")
+        st.subheader("📋 Relatório Completo dos Mapas")
         
-        # Filtra para mostrar na tabela apenas o que foi jogado
-        df_show = df_final[df_final['matches'] > 0].sort_values(by=['matches', 'WinRate'], ascending=False)
+        # Mostra TODOS os mapas, ordenados pelos mais jogados primeiro
+        df_show = df_final.sort_values(by=['matches', 'WinRate'], ascending=False)
         
         st.dataframe(
-            df_show[['map_name', 'matches', 'wins', 'WinRate']],
+            df_show[['map_name', 'matches', 'wins', 'losses', 'WinRate']],
             hide_index=True,
             column_config={
                 "map_name": "Mapa",
-                "matches": st.column_config.NumberColumn("Partidas", format="%d 🎮"),
+                "matches": st.column_config.NumberColumn("Partidas Totais", format="%d 🎮", help="Soma de Vitórias e Derrotas"),
                 "wins": st.column_config.NumberColumn("Vitórias", format="%d 🏆"),
+                "losses": st.column_config.NumberColumn("Derrotas", format="%d 💀"),
                 "WinRate": st.column_config.ProgressColumn("Aproveitamento", format="%.0f%%", min_value=0, max_value=100)
             },
             use_container_width=True
