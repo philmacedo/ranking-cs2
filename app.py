@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from demoparser2 import DemoParser
 
 # --- 1. CONFIGURAÇÃO E ESTILOS (TEMA CS2) ---
-st.set_page_config(page_title=" Jogatina CS2 Ranking", page_icon="🔫", layout="wide")
+st.set_page_config(page_title="CS2 Hub", page_icon="🔫", layout="wide")
 
 st.markdown("""
 <style>
@@ -89,13 +89,10 @@ def ler_evento(parser, nome_evento):
     except: return pd.DataFrame()
 
 def arquivar_e_resetar(nome_temporada):
-    """Copia dados atuais para o histórico e limpa as tabelas principais"""
     try:
-        # 1. Busca dados atuais
         stats_atuais = supabase.table('player_stats').select("*").execute().data
         mapas_atuais = supabase.table('player_map_stats').select("*").execute().data
         
-        # 2. Prepara para Histórico (Adiciona nome da season e remove ID original)
         if stats_atuais:
             for row in stats_atuais:
                 row['season_name'] = nome_temporada
@@ -109,12 +106,10 @@ def arquivar_e_resetar(nome_temporada):
                 if 'id' in row: del row['id']
             supabase.table('history_map_stats').insert(mapas_atuais).execute()
 
-        # 3. Limpa tabelas principais
         supabase.table('player_stats').delete().gte('matches', 0).execute()
         try: supabase.table('player_map_stats').delete().gte('matches', 0).execute() 
         except: pass
         supabase.table('processed_matches').delete().neq('match_hash', '0').execute()
-        
         return True
     except Exception as e:
         st.error(f"Erro ao arquivar: {e}")
@@ -303,7 +298,7 @@ def processar_demo(arquivo_upload):
 
 # --- 4. INTERFACE ---
 st.sidebar.title("Navegação")
-pagina = st.sidebar.radio("Ir para:", ["📤 Upload & Partida", "🏆 Ranking Global", "🗺️ Mapas & Radar", "📜 Histórico"], label_visibility="collapsed")
+pagina = st.sidebar.radio("Ir para:", ["📤 Upload & Partida", "🏆 Ranking Global", "🗺️ Estatísticas de Mapas", "📜 Histórico"], label_visibility="collapsed")
 
 if pagina == "📤 Upload & Partida":
     st.title("📤 Upload de Demo")
@@ -325,7 +320,7 @@ if pagina == "📤 Upload & Partida":
         st.divider()
         st.subheader("📊 Relatório da Partida Atual")
         df = st.session_state["df_partida_atual"].copy()
-        df['Rating'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1) # Rating simplificado visualização rápida
+        df['Rating'] = df.apply(lambda x: (x['kills'] + (x['assists']*0.4)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df['Resultado'] = df['wins'].apply(lambda x: "🏆 Vitória" if x == 1 else "💀 Derrota")
         df = df.sort_values(by='Rating', ascending=False)
         st.dataframe(df[['nickname', 'Resultado', 'Rating', 'kills', 'assists', 'deaths']], hide_index=True, use_container_width=True)
@@ -385,6 +380,31 @@ elif pagina == "🏆 Ranking Global":
     st.subheader("📋 Classificação Oficial")
     st.dataframe(df_podium[['nickname', 'RatingFinal', 'RatingRaw', 'Retrospecto', 'KD', 'ADR', 'WinRatePct', 'kills', 'deaths', 'enemies_flashed', 'utility_damage']], hide_index=True, column_config={"nickname": "Jogador", "RatingFinal": st.column_config.NumberColumn("RATING OFICIAL", format="%.2f ⭐"), "WinRatePct": st.column_config.NumberColumn("Win%", format="%.0f%%")}, use_container_width=True)
 
+    # --- TEXTO EXPLICATIVO RESTAURADO ---
+    st.divider()
+    with st.expander("ℹ️ Entenda a Matemática do Ranking (Como funciona?)"):
+        st.markdown(r"""
+        ### 1. 🧠 O "Rating Performance" (Sua Nota de Habilidade)
+        
+        $$
+        \text{Rating} = \frac{\text{Kills} + (\text{Assists} \times 0.4) + (\text{Cegos} \times 0.2) + (\text{DanoUtil} \div 100)}{\text{Mortes}}
+        $$
+        
+        ---
+
+        ### 2. ⚖️ O Fator de Consistência (A Regra dos 50 Jogos)
+        $$
+        \text{Rating Oficial} = \text{Rating Base} \times \min\left(1, \frac{\text{Jogos}}{50}\right)
+        $$
+
+        **O que isso significa na prática?**
+        | Partidas Jogadas | Peso da Nota | Situação |
+        | :--- | :--- | :--- |
+        | 🐣 **10 Jogos** | 20% | Nota muito reduzida (Iniciante) |
+        | 🐥 **25 Jogos** | 50% | Nota parcial (Ganhando experiência) |
+        | 🦅 **50 Jogos** | **100%** | **Nota Real (Lenda do Ranking)** |
+        """)
+
     st.divider()
     with st.expander("⚠️ Área Administrativa (Encerrar Temporada)"):
         st.warning("Atenção: Isso irá salvar os dados atuais no Histórico e zerar o Ranking Global.")
@@ -398,14 +418,11 @@ elif pagina == "🏆 Ranking Global":
                     st.rerun()
             else: st.error("Senha incorreta ou nome da temporada vazio.")
 
-
-elif pagina == "🗺️ Mapas & Radar":
-    st.title("🗺️ Mapas & Radar")
-    st.markdown("Analise o desempenho e veja quais mapas precisam ser treinados.")
+elif pagina == "🗺️ Estatísticas de Mapas":
+    st.title("🗺️ Estatísticas de Mapas")
     
     if st.button("🔄 Carregar Mapas"): st.rerun()
 
-    # Busca dados
     try:
         resp_maps = supabase.table('player_map_stats').select("*").execute()
     except:
@@ -414,70 +431,40 @@ elif pagina == "🗺️ Mapas & Radar":
     
     if resp_maps and resp_maps.data:
         df_maps = pd.DataFrame(resp_maps.data)
-        
-        # 1. Lista Obrigatória de Mapas (Para aparecerem mesmo zerados)
         MAPAS_OFICIAIS = ['Inferno','Overpass',  'Ancient', 'Nuke', 'Dust2','Anubis', 'Mirage']
-        
         jogadores = sorted(df_maps['nickname'].unique())
         jogador_selecionado = st.selectbox("Selecione a Visão:", ["Todos (Média Geral)"] + jogadores)
         
-        # 2. Lógica de Agrupamento
         if jogador_selecionado != "Todos (Média Geral)":
-            # Visão Individual
             df_filtered = df_maps[df_maps['nickname'] == jogador_selecionado].copy()
             titulo_grafico = f"Performance de {jogador_selecionado}"
         else:
-            # Visão de Grupo (Lógica Inteligente)
-            # Agrupa por mapa
             df_grp = df_maps.groupby('map_name')
-            
-            # Para "Partidas": Pegamos o MÁXIMO de partidas que alguém jogou naquele mapa.
-            # (Ex: Se Ph jogou 1 (Lost) e Cyrax jogou 1 (Lost), o grupo jogou 1 partida, e não 2).
-            # Isso garante que a derrota conte apenas 1 vez para o grupo.
             df_matches = df_grp['matches'].max()
-            
-            # Para calcular a % de WinRate real, usamos a média das vitórias
             df_wins_sum = df_grp['wins'].sum()
             df_matches_sum = df_grp['matches'].sum()
             win_ratio = (df_wins_sum / df_matches_sum).fillna(0)
-            
-            # Recria o DataFrame do Grupo
-            df_filtered = pd.DataFrame({
-                'matches': df_matches,
-                'wins': (df_matches * win_ratio).astype(int) # Proporcional
-            }).reset_index()
-            
+            df_filtered = pd.DataFrame({'matches': df_matches, 'wins': (df_matches * win_ratio).astype(int)}).reset_index()
             titulo_grafico = "Performance Geral do Grupo"
 
-        # 3. Cruzamento com a Lista Oficial (O Pulo do Gato)
-        # Cria um DF com todos os mapas vazios
         df_completo = pd.DataFrame({'map_name': MAPAS_OFICIAIS})
-        # Junta com os dados reais (quem não jogou fica com 0)
         df_final = pd.merge(df_completo, df_filtered, on='map_name', how='left').fillna(0)
-        
-        # 4. Cálculos Finais
-        # Win Rate
         df_final['WinRate'] = df_final.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0, axis=1)
-        # Derrotas (Apenas para visualização se quiser)
         df_final['losses'] = df_final['matches'] - df_final['wins']
         
-        # --- VISUALIZAÇÃO ---
         col_radar, col_barras = st.columns([1, 1])
 
-        # A. GRÁFICO DE RADAR
         with col_radar:
             categories = df_final['map_name'].tolist()
             values = df_final['WinRate'].tolist()
             matches = df_final['matches'].tolist()
-            
             categories_radar = categories + [categories[0]]
             values_radar = values + [values[0]]
             
             fig_radar = go.Figure()
             fig_radar.add_trace(go.Scatterpolar(
                 r=values_radar, theta=categories_radar, fill='toself', name='Win Rate %',
-                line=dict(color='#e9a338', width=3),
-                fillcolor='rgba(233, 163, 56, 0.3)',
+                line=dict(color='#e9a338', width=3), fillcolor='rgba(233, 163, 56, 0.3)',
                 hovertext=[f"<b>{c}</b><br>Jogos: {int(m)}<br>Vitórias: {int(v/100*m)}<br>Derrotas: {int(m - (v/100*m))}" for c, m, v in zip(categories, matches, values)] + [""]
             ))
             fig_radar.update_layout(
@@ -487,17 +474,13 @@ elif pagina == "🗺️ Mapas & Radar":
             st.markdown(f"### 🕸️ Radar de Win Rate")
             st.plotly_chart(fig_radar, use_container_width=True)
 
-        # B. GRÁFICO DE BARRAS VERTICAIS
         with col_barras:
-            # Ordena por WinRate para o gráfico
             df_barras = df_final.sort_values(by=['WinRate', 'matches'], ascending=False)
-            
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(
-                x=df_barras['map_name'], 
-                y=df_barras['WinRate'],
+                x=df_barras['map_name'], y=df_barras['WinRate'],
                 marker=dict(color=df_barras['WinRate'], colorscale='RdYlGn', cmin=0, cmax=100, showscale=False),
-                text=[f"{int(m)} Jgs" if m > 0 else "" for m in df_barras['matches']], # Mostra total de jogos em cima da barra
+                text=[f"{int(m)} Jgs" if m > 0 else "" for m in df_barras['matches']],
                 textposition='outside',
                 hovertemplate='<b>%{x}</b><br>Win Rate: %{y:.1f}%<br>Total Partidas: %{customdata}<extra></extra>',
                 customdata=df_barras['matches']
@@ -511,33 +494,26 @@ elif pagina == "🗺️ Mapas & Radar":
             st.markdown("### 📊 Eficiência vs Quantidade")
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        # C. TABELA COMPLETA (TODOS OS MAPAS)
         st.divider()
         st.subheader("📋 Relatório Completo dos Mapas")
-        
-        # Mostra TODOS os mapas, ordenados pelos mais jogados primeiro
         df_show = df_final.sort_values(by=['matches', 'WinRate'], ascending=False)
-        
         st.dataframe(
             df_show[['map_name', 'matches', 'wins', 'losses', 'WinRate']],
             hide_index=True,
             column_config={
                 "map_name": "Mapa",
-                "matches": st.column_config.NumberColumn("Partidas Totais", format="%d 🎮", help="Soma de Vitórias e Derrotas"),
+                "matches": st.column_config.NumberColumn("Partidas Totais", format="%d 🎮"),
                 "wins": st.column_config.NumberColumn("Vitórias", format="%d 🏆"),
                 "losses": st.column_config.NumberColumn("Derrotas", format="%d 💀"),
                 "WinRate": st.column_config.ProgressColumn("Aproveitamento", format="%.0f%%", min_value=0, max_value=100)
             },
             use_container_width=True
         )
-    else:
-        st.info("Nenhuma estatística de mapa encontrada ainda. Suba partidas novas para popular o gráfico!")
+    else: st.info("Nenhuma estatística de mapa encontrada ainda.")
 
 elif pagina == "📜 Histórico":
     st.title("📜 Histórico de Temporadas")
-    st.markdown("Consulte os campeões e estatísticas de temporadas passadas.")
-
-    # Busca temporadas disponíveis
+    
     try:
         resp_history = supabase.table('history_player_stats').select("season_name").execute()
         seasons = sorted(list(set([row['season_name'] for row in resp_history.data]))) if resp_history.data else []
@@ -545,23 +521,18 @@ elif pagina == "📜 Histórico":
 
     if seasons:
         selected_season = st.selectbox("Selecione a Temporada:", seasons)
-        
-        # Carrega dados da season selecionada
         resp_data = supabase.table('history_player_stats').select("*").eq('season_name', selected_season).execute()
         df_hist = pd.DataFrame(resp_data.data)
         
-        # Recalcula métricas para exibição
         df_hist['KD'] = df_hist.apply(lambda x: x['kills'] / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
         df_hist['WinRatePct'] = df_hist.apply(lambda x: (x['wins'] / x['matches'] * 100) if x['matches'] > 0 else 0.0, axis=1)
         df_hist['RatingRaw'] = df_hist.apply(lambda x: (x['kills'] + (x['assists']*0.4) + (x['enemies_flashed']*0.2) + (x['utility_damage']*0.01)) / x['deaths'] if x['deaths'] > 0 else x['kills'], axis=1)
-        
         META_PARTIDAS = 50 
         df_hist['Consistency'] = df_hist['matches'].apply(lambda x: x / META_PARTIDAS if x < META_PARTIDAS else 1.0)
         df_hist['RatingFinal'] = df_hist['RatingRaw'] * df_hist['Consistency']
         
         df_podium = df_hist.sort_values(by='RatingFinal', ascending=False).reset_index(drop=True)
 
-        # Mostra o Campeão da Season
         if not df_podium.empty:
             champion = df_podium.iloc[0]
             st.markdown(f"""
@@ -572,5 +543,4 @@ elif pagina == "📜 Histórico":
             """, unsafe_allow_html=True)
 
         st.dataframe(df_podium[['nickname', 'RatingFinal', 'KD', 'WinRatePct', 'matches', 'kills', 'deaths']], hide_index=True, column_config={"RatingFinal": st.column_config.NumberColumn("Rating", format="%.2f ⭐")}, use_container_width=True)
-    else:
-        st.info("Nenhuma temporada arquivada ainda.")
+    else: st.info("Nenhuma temporada arquivada ainda.")
