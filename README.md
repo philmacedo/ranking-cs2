@@ -55,4 +55,6 @@ $$
 
 > **Resumo:** Você precisa jogar pelo menos **50 partidas** para que seu Rating seja contabilizado integralmente.
 
+## 👨‍💻 Autor
+
 **Philipy Macêdo** -> Engenharia de Sistemas e Computação - UERJ
